@@ -144,18 +144,42 @@ public struct MeuralGallery: Codable, Sendable, Equatable, Identifiable {
     public let id: Int
     public let name: String
     public let itemIds: [Int]
+    /// `true` when `itemIds` was explicitly present in the payload; `false` when omitted.
+    public let hasExplicitItemIds: Bool
 
-    public init(id: Int, name: String, itemIds: [Int] = []) {
+    public init(id: Int, name: String, itemIds: [Int] = [], hasExplicitItemIds: Bool = true) {
         self.id = id
         self.name = name
         self.itemIds = itemIds
+        self.hasExplicitItemIds = hasExplicitItemIds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case itemIds
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(Int.self, forKey: .id)
         self.name = try container.decode(String.self, forKey: .name)
-        self.itemIds = try container.decodeIfPresent([Int].self, forKey: .itemIds) ?? []
+        if let decoded = try container.decodeIfPresent([Int].self, forKey: .itemIds) {
+            self.itemIds = decoded
+            self.hasExplicitItemIds = true
+        } else {
+            self.itemIds = []
+            self.hasExplicitItemIds = false
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        if hasExplicitItemIds {
+            try container.encode(itemIds, forKey: .itemIds)
+        }
     }
 }
 
@@ -652,10 +676,11 @@ public actor MeuralClient {
             return ManualItemDeleteResult(detached: true, deletedAccountItem: false, skippedOrphanCheck: true)
         }
 
-        // Safety guard: if other galleries exist but none report itemIds, do not risk deleting a shared photo.
+        // Safety guard: if any remaining gallery omitted itemIds or none report itemIds, do not risk deleting a shared photo.
+        let hasIncompleteInventory = otherGalleries.contains { !$0.hasExplicitItemIds }
         let otherItemIDs = otherGalleries.reduce(into: Set<Int>()) { $0.formUnion($1.itemIds) }
-        if !otherGalleries.isEmpty && otherItemIDs.isEmpty {
-            log("Skipping account-wide delete for item \(itemID): remaining galleries returned empty itemIds (safety guard).")
+        if hasIncompleteInventory || (!otherGalleries.isEmpty && otherItemIDs.isEmpty) {
+            log("Skipping account-wide delete for item \(itemID): remaining galleries had incomplete or empty itemIds (safety guard).")
             return ManualItemDeleteResult(detached: true, deletedAccountItem: false, skippedOrphanCheck: true)
         }
 
@@ -719,9 +744,10 @@ public actor MeuralClient {
             return ManualGalleryDeleteResult(galleryDeleted: true, deletedItemIDs: [], skippedOrphanCleanup: true)
         }
 
+        let hasIncompleteInventory = remainingGalleries.contains { !$0.hasExplicitItemIds }
         let referencedIDs = remainingGalleries.reduce(into: Set<Int>()) { $0.formUnion($1.itemIds) }
-        if !remainingGalleries.isEmpty && referencedIDs.isEmpty {
-            log("Skipping orphan item deletion after deleting gallery \(galleryID): remaining galleries returned empty itemIds (safety guard).")
+        if hasIncompleteInventory || (!remainingGalleries.isEmpty && referencedIDs.isEmpty) {
+            log("Skipping orphan item deletion after deleting gallery \(galleryID): remaining galleries had incomplete or empty itemIds (safety guard).")
             return ManualGalleryDeleteResult(galleryDeleted: true, deletedItemIDs: [], skippedOrphanCleanup: true)
         }
 
@@ -893,6 +919,10 @@ public actor MeuralClient {
         }
 
         let galleries = try await getGalleries()
+        if galleries.contains(where: { !$0.hasExplicitItemIds }) {
+            log("Skipping orphan cleanup: one or more galleries omitted itemIds (safety guard).")
+            return OrphanCleanupResult(deletedCount: 0, prunedItemIDs: [])
+        }
         var galleryItemIDs = Set<Int>()
         for gallery in galleries {
             galleryItemIDs.formUnion(gallery.itemIds)

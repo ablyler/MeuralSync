@@ -1,6 +1,8 @@
 import CoreGraphics
 import Foundation
+import ImageIO
 import Testing
+import UniformTypeIdentifiers
 @testable import MeuralSyncCore
 
 private struct MockMeasurer: TextMeasuring {
@@ -145,6 +147,40 @@ struct ImageProcessorTests {
         let combinedNearSquare = try ImageProcessor.combine(nearSquare, nearSquare, orientation: .landscape)
         #expect(combinedNearSquare.width == 1920)
         #expect(combinedNearSquare.height == 1080)
+    }
+
+    @Test("EXIF leftMirrored and rightMirrored non-square images rotate without clipping")
+    func exifMirroredNonSquareOrientation() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MeuralExifTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let solid = makeSolidImage(width: 200, height: 100, r: 0.9, g: 0.2, b: 0.2)
+        for orientationValue in [5, 7] { // 5 = leftMirrored, 7 = rightMirrored
+            let url = tempDir.appendingPathComponent("exif-\(orientationValue).jpg")
+            let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.jpeg.identifier as CFString, 1, nil)!
+            let props: [CFString: Any] = [
+                kCGImagePropertyOrientation: orientationValue,
+                kCGImageDestinationLossyCompressionQuality: 1.0,
+            ]
+            CGImageDestinationAddImage(dest, solid, props as CFDictionary)
+            #expect(CGImageDestinationFinalize(dest))
+
+            let oriented = try ImageProcessor.loadOrientedImage(from: url)
+            #expect(oriented.width == 100)
+            #expect(oriented.height == 200)
+
+            // Sample center pixel to verify the image wasn't shifted outside the canvas (would be black/transparent)
+            var pixel = [UInt8](repeating: 0, count: 4)
+            let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+            let sampleCtx = CGContext(
+                data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+            )!
+            sampleCtx.draw(oriented, in: CGRect(x: -50, y: -100, width: 100, height: 200))
+            #expect(pixel[0] > 180) // Red channel preserved, not clipped to black
+        }
     }
 
     @Test("Single oversized name preserves omitted count")

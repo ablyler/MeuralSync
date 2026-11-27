@@ -949,4 +949,118 @@ struct CoreIntegrationTests {
         #expect(createdGalleryBody?.contains("orientation=horizontal") == true)
         #expect(uploadCount == 2)
     }
+
+    @Test("Orphan cleanup skips deletion when any gallery omits itemIds; multi-instance sync continues after first failure")
+    func partialItemIdsSafetyAndMultiInstanceIsolation() async throws {
+        // 1. Partial itemIds guard: gallery 1 has explicit itemIds, gallery 2 omits itemIds -> must skip orphan delete
+        let store = InMemoryCredentialStore()
+        try store.setCredentials(MeuralCredentials(email: "u@example.com", password: "pw"), for: "inst-partial")
+        var deletedItemIDs: [Int] = []
+        let partialTransport = MockTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            let method = request.httpMethod ?? "GET"
+            if url.contains("cognito-idp") {
+                return (Data(#"{"AuthenticationResult":{"AccessToken":"tok"}}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/galleries") {
+                return (Data(#"{"data":[{"id":1,"name":"Explicit","itemIds":[10]},{"id":2,"name":"Omitted"}]}"#.utf8), 200)
+            }
+            if method == "DELETE" && url.contains("/items/") {
+                if let id = Int(url.split(separator: "/").last ?? "") {
+                    deletedItemIDs.append(id)
+                }
+                return (Data(#"{}"#.utf8), 200)
+            }
+            return (Data(#"{"data":[]}"#.utf8), 200)
+        }
+        let client = MeuralClient(instanceName: "inst-partial", credentialStore: store, transport: partialTransport, sleepHandler: { _ in })
+        let cleanup = try await client.deleteOrphanPhotos(trackedItemIDs: [99], protectedItemIDs: [])
+        #expect(cleanup.deletedCount == 0)
+        #expect(deletedItemIDs.isEmpty)
+
+        // 2. Multi-instance sync: Instance 1 fails (no matching photos), Instance 2 still runs and uploads!
+        struct MultiLib: PhotoLibraryProviding {
+            func fetchAllPersonNames() async throws -> [String] { ["Bob"] }
+            func queryPhotos(options: PhotosQueryOptions) async throws -> [PhotoMetadata] {
+                if options.includePeople.contains("Nobody") { return [] }
+                return [PhotoMetadata(uuid: "OK-1", date: Date(), width: 1080, height: 1920, curationScore: 0.9)]
+            }
+            func enrichLocations(for photos: [PhotoMetadata]) async -> [PhotoMetadata] { photos }
+        }
+        struct SimpleExp: PhotoExporting {
+            func exportPhoto(_ photo: PhotoMetadata, toDirectory directory: URL) async throws -> URL {
+                let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+                let ctx = CGContext(
+                    data: nil, width: photo.width, height: photo.height, bitsPerComponent: 8, bytesPerRow: photo.width * 4,
+                    space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+                )!
+                ctx.setFillColor(CGColor(srgbRed: 0.2, green: 0.5, blue: 0.8, alpha: 1))
+                ctx.fill(CGRect(x: 0, y: 0, width: photo.width, height: photo.height))
+                let outURL = directory.appendingPathComponent("\(photo.uuid).jpg")
+                try ImageProcessor.saveJPEG(ctx.makeImage()!, to: outURL)
+                return outURL
+            }
+        }
+
+        let inst1 = InstanceConfig(
+            name: "Failing Frame",
+            enabled: true,
+            sendToDevices: false,
+            frameOrientation: .portrait,
+            photoCount: 1,
+            people: PeopleFilter(include: ["Nobody"]),
+            destinationAlbumName: "Fail Sync",
+            randomizeGalleryName: false,
+            uploadIntervalSeconds: 0
+        )
+        let inst2 = InstanceConfig(
+            name: "Healthy Frame",
+            enabled: true,
+            sendToDevices: false,
+            frameOrientation: .portrait,
+            photoCount: 1,
+            people: PeopleFilter(include: ["Bob"]),
+            destinationAlbumName: "Healthy Sync",
+            randomizeGalleryName: false,
+            uploadIntervalSeconds: 0
+        )
+        try store.setCredentials(MeuralCredentials(email: "u1@example.com", password: "pw"), for: inst1.storageKey)
+        try store.setCredentials(MeuralCredentials(email: "u2@example.com", password: "pw"), for: inst2.storageKey)
+
+        var inst2Uploaded = 0
+        let multiTransport = MockTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            let method = request.httpMethod ?? "GET"
+            if url.contains("cognito-idp") {
+                return (Data(#"{"AuthenticationResult":{"AccessToken":"tok"}}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/galleries") {
+                return (Data(#"{"data":[{"id":77,"name":"Healthy Sync","itemIds":[]}]}"#.utf8), 200)
+            }
+            if method == "POST" && url.hasSuffix("/items") {
+                inst2Uploaded += 1
+                return (Data(#"{"data":{"id":901}}"#.utf8), 200)
+            }
+            if method == "POST" && url.contains("/galleries/77/items/901") {
+                return (Data(#"{}"#.utf8), 200)
+            }
+            return (Data(#"{"data":[]}"#.utf8), 200)
+        }
+
+        let engine = SyncEngine()
+        await #expect(throws: SyncError.self) {
+            try await engine.runSync(
+                config: AppConfig(instances: [inst1, inst2]),
+                credentialStore: store,
+                photoLibrary: MultiLib(),
+                exporter: SimpleExp(),
+                stateStore: InMemorySyncStateStore(),
+                clientFactory: { key, credStore, logHandler in
+                    MeuralClient(instanceName: key, credentialStore: credStore, transport: multiTransport, sleepHandler: { _ in }, logHandler: logHandler)
+                }
+            )
+        }
+        // Instance 2 still completed its upload even though Instance 1 failed!
+        #expect(inst2Uploaded == 1)
+    }
 }

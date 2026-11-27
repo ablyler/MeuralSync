@@ -202,10 +202,8 @@ public enum ImageProcessor {
         }
 
         switch orientation {
-        case .upMirrored, .downMirrored:
+        case .upMirrored, .downMirrored, .leftMirrored, .rightMirrored:
             transform = transform.translatedBy(x: w, y: 0).scaledBy(x: -1, y: 1)
-        case .leftMirrored, .rightMirrored:
-            transform = transform.translatedBy(x: h, y: 0).scaledBy(x: -1, y: 1)
         default:
             break
         }

@@ -67,7 +67,7 @@ private struct InstancesSettingsTab: View {
                     } label: {
                         Image(systemName: "minus")
                     }
-                    .disabled(selectedID == nil)
+                    .disabled(selectedID == nil || appState.isSyncing || appState.isMutatingGalleries || appState.isRetryingDevicePush)
                     .accessibilityLabel("Delete Instance")
                     .help("Delete Selected Instance")
 
@@ -76,6 +76,7 @@ private struct InstancesSettingsTab: View {
                     Button("Import config.json…") {
                         showingImporter = true
                     }
+                    .disabled(appState.isSyncing || appState.isMutatingGalleries || appState.isRetryingDevicePush)
                     .controlSize(.small)
                 }
                 .padding(8)

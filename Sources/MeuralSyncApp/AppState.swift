@@ -594,7 +594,13 @@ final class AppState {
     }
 
     private func checkSchedule() {
-        guard let schedule = config.schedule, schedule.enabled, !isSyncing, !isMutatingGalleries else { return }
+        guard let schedule = config.schedule,
+              schedule.enabled,
+              !isSyncing,
+              !isMutatingGalleries,
+              !isRetryingDevicePush,
+              !config.instances.filter(\.enabled).isEmpty
+        else { return }
         guard isPhotoAccessGranted else { return }
 
         let now = Date()

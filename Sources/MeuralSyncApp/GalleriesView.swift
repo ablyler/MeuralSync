@@ -323,7 +323,6 @@ struct GalleriesView: View {
 
             Button {
                 galleriesRefreshToken += 1
-                itemsRefreshToken += 1
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
@@ -443,11 +442,12 @@ struct GalleriesView: View {
             } else if let instance = selectedInstance, let galleryID = selectedGalleryID {
                 ScrollView {
                     LazyVGrid(columns: gridColumns, spacing: 14) {
+                        let canDeleteItems = accountGalleryIDs.contains(galleryID)
                         ForEach(items) { item in
                             PhotoGridCard(
                                 item: item,
                                 aspectRatio: detectedOrientation == .landscape ? (16.0 / 9.0) : (9.0 / 16.0),
-                                mutationsDisabled: mutationsDisabled,
+                                mutationsDisabled: mutationsDisabled || !canDeleteItems,
                                 onPreview: {
                                     previewTarget = LightboxTarget(instance: instance, galleryID: galleryID, item: item)
                                 },
@@ -469,6 +469,7 @@ struct GalleriesView: View {
         galleriesLoadGeneration += 1
         let generation = galleriesLoadGeneration
 
+        let previousGalleryID = selectedGalleryID
         galleries = []
         accountGalleryIDs = []
         deviceGalleryIDs = []
@@ -514,10 +515,19 @@ struct GalleriesView: View {
                 if let ids = device.galleryIds {
                     matchedIDs.formUnion(ids)
                 }
-                if let deviceGalleries = try? await client.getDeviceGalleries(deviceID: device.id) {
+                do {
+                    let deviceGalleries = try await client.getDeviceGalleries(deviceID: device.id)
                     for g in deviceGalleries {
                         matchedIDs.insert(g.id)
                         extraGalleriesByID[g.id] = g
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let err as URLError where err.code == .cancelled {
+                    throw CancellationError()
+                } catch {
+                    if matchedIDs.isEmpty && lookupFailure == nil {
+                        lookupFailure = "Failed to load frame albums: \(error.localizedDescription)"
                     }
                 }
             }
@@ -535,7 +545,11 @@ struct GalleriesView: View {
             deviceGalleryIDs = matchedIDs
             deviceLookupError = lookupFailure
             detectedOrientation = devices.compactMap(\.parsedOrientation).first
-            selectedGalleryID = displayedGalleries.first?.id
+            if let prev = previousGalleryID, displayedGalleries.contains(where: { $0.id == prev }) {
+                selectedGalleryID = prev
+            } else {
+                selectedGalleryID = displayedGalleries.first?.id
+            }
         } catch is CancellationError {
             // Cancelled due to instance switch or refresh.
         } catch let err as URLError where err.code == .cancelled {

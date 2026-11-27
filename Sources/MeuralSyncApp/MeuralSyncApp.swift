@@ -79,9 +79,9 @@ final class DockVisibilityManager {
 
     func showInDockAndActivate() {
         setPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         Task { @MainActor in
-            NSApp.activate(ignoringOtherApps: true)
+            NSApp.activate()
         }
     }
 

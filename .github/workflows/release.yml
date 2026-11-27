@@ -85,5 +85,6 @@ jobs:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
           gh release create "$RELEASE_TAG" release_assets/* \
+            --target "$GITHUB_SHA" \
             --title "MeuralSync $RELEASE_TAG" \
             --generate-notes

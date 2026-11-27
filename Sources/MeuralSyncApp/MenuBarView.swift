@@ -121,7 +121,7 @@ struct MenuBarView: View {
                             appState.retryDevicePush(for: item.instance)
                         }
                         .controlSize(.small)
-                        .disabled(appState.isSyncing)
+                        .disabled(appState.isSyncing || appState.isMutatingGalleries)
                     }
                     Button {
                         appState.clearPendingDevicePush(for: item.instance)

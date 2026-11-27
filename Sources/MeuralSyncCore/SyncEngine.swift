@@ -27,6 +27,7 @@ public enum SyncError: Error, LocalizedError, Sendable {
     case missingCredentials([String])
     case noPhotosUploaded(String)
     case tooManyUploadFailures(Int)
+    case multipleInstanceFailures([(instanceName: String, message: String)])
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +39,9 @@ public enum SyncError: Error, LocalizedError, Sendable {
             return "No photos were uploaded for '\(instanceName)'. Existing galleries and frames were left unchanged."
         case .tooManyUploadFailures(let count):
             return "Aborted sync after \(count) consecutive Meural upload failures."
+        case .multipleInstanceFailures(let failures):
+            let details = failures.map { "\($0.instanceName): \($0.message)" }.joined(separator: "; ")
+            return "Sync failed for \(failures.count) instance(s): \(details)"
         }
     }
 }
@@ -170,6 +174,7 @@ public actor SyncEngine {
             MeuralClient(instanceName: key, credentialStore: store, logHandler: logHandler)
         }
 
+        var failures: [(instanceName: String, error: Error)] = []
         for instance in enabledInstances {
             try Task.checkCancellation()
             let credentialKey = resolveCredentialKey(for: instance, in: credentialStore) ?? instance.storageKey
@@ -185,9 +190,24 @@ public actor SyncEngine {
                     onProgress: onProgress,
                     onLog: onLog
                 )
+            } catch is CancellationError {
+                throw CancellationError()
             } catch let error as URLError where error.code == .cancelled {
                 throw CancellationError()
+            } catch {
+                let message = "[\(instance.name)] Sync failed: \(error.localizedDescription)"
+                logger.error("\(message, privacy: .private)")
+                onLog(message)
+                failures.append((instance.name, error))
             }
+        }
+
+        if failures.count == 1 {
+            throw failures[0].error
+        } else if failures.count > 1 {
+            throw SyncError.multipleInstanceFailures(
+                failures.map { ($0.instanceName, $0.error.localizedDescription) }
+            )
         }
     }
 
@@ -459,7 +479,16 @@ public actor SyncEngine {
         if !existingItemIDs.isEmpty {
             onProgress(SyncProgress(instanceName: instance.name, phase: "Removing previous gallery items..."))
             for itemID in existingItemIDs {
-                try? await client.deleteGalleryItem(galleryID: gallery.id, itemID: itemID)
+                try Task.checkCancellation()
+                do {
+                    try await client.deleteGalleryItem(galleryID: gallery.id, itemID: itemID)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let err as URLError where err.code == .cancelled {
+                    throw CancellationError()
+                } catch {
+                    log("Warning: failed detaching previous item \(itemID) from gallery \(gallery.id): \(error.localizedDescription)")
+                }
             }
         }
 
