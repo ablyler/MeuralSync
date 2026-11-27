@@ -21,12 +21,38 @@ A native macOS menu bar app (Swift + SwiftUI) that syncs curated photos from you
 
 ## Requirements
 
-- macOS 14.0+ (Sonoma or newer)
-- Xcode / Swift 6.0+ to build from source
+- macOS 14.0+ (Sonoma or newer, Apple Silicon)
 - **Photos Library permission** (required for `PhotoKit`)
 - **Full Disk Access** *(optional — only needed if you use People include/exclude filters or People names in captions)*
 
-## Build & Run
+## Install (Recommended)
+
+Download the latest signed release from [GitHub Releases](https://github.com/ablyler/MeuralSync/releases/latest) (includes automatic in-app updates via Sparkle 2):
+
+1. Download `MeuralSync-vX.Y.Z.zip` from the [Latest Release](https://github.com/ablyler/MeuralSync/releases/latest) and unzip it.
+2. Move `MeuralSync.app` into `/Applications`.
+3. Because the release is not Apple-notarized, remove macOS's quarantine flag once before first launch:
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/MeuralSync.app
+   open /Applications/MeuralSync.app
+   ```
+
+Or install in one step from Terminal:
+
+```bash
+curl -fsSL "$(curl -fsSL https://api.github.com/repos/ablyler/MeuralSync/releases/latest | grep -o '"browser_download_url": *"[^"]*\.zip"' | cut -d'"' -f4)" -o /tmp/MeuralSync.zip \
+  && rm -rf /Applications/MeuralSync.app \
+  && ditto -x -k /tmp/MeuralSync.zip /Applications/ \
+  && rm -f /tmp/MeuralSync.zip \
+  && xattr -dr com.apple.quarantine /Applications/MeuralSync.app \
+  && open /Applications/MeuralSync.app
+```
+
+Future updates install automatically in-app (**Menu Bar → Updates…** or **Settings → General → Check for Updates…**).
+
+## Build from Source
+
+Requires Xcode / Swift 6.0+.
 
 ```bash
 # Run unit & Core Graphics integration tests
