@@ -104,12 +104,8 @@ if [ -d "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework" ]; then
     codesign "${SIGN_ARGS[@]}" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
 fi
 
-for bundle in "$APP_BUNDLE/Contents/Resources"/*.bundle; do
-    if [ -d "$bundle" ]; then
-        codesign "${SIGN_ARGS[@]}" "$bundle"
-    fi
-done
-
+# Note: SwiftPM resource bundles in Contents/Resources/ contain only data (no executable)
+# and are sealed by the outer app bundle's CodeResources signature.
 codesign "${SIGN_ARGS[@]}" "$APP_BUNDLE"
 
 echo "Built $APP_BUNDLE"
