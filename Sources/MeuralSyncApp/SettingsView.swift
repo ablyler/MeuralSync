@@ -173,6 +173,11 @@ private struct InstanceEditorView: View {
                         Text(mode.displayName).tag(mode)
                     }
                 }
+                Picker("Caption Date Format", selection: $instance.captionDateFormat) {
+                    ForEach(CaptionDateFormat.allCases) { fmt in
+                        Text(fmt.displayName).tag(fmt)
+                    }
+                }
                 TextField("Gallery Name Template (:date:)", text: $instance.destinationAlbumName)
                 if MeuralClient.galleryTemplateRegex(for: instance.destinationAlbumName) == nil {
                     Text("Template should include at least 3 static characters (e.g. \"Family Photos - :date:\") so old galleries can be identified safely.")
@@ -591,6 +596,7 @@ private struct WeekdayPicker: View {
 private struct CaptionPreviewTab: View {
     @State private var peopleText = "Alice Smith, Bob Jones, Jane Doe"
     @State private var placeText = "Space Mountain, Magic Kingdom Park"
+    @State private var dateFormat: CaptionDateFormat = .medium
     @State private var previewImage: NSImage?
 
     var body: some View {
@@ -598,6 +604,13 @@ private struct CaptionPreviewTab: View {
             HStack {
                 TextField("People (comma-separated)", text: $peopleText)
                 TextField("Location", text: $placeText)
+                Picker("Date", selection: $dateFormat) {
+                    ForEach(CaptionDateFormat.allCases) { fmt in
+                        Text(fmt.displayName).tag(fmt)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 160)
             }
             .textFieldStyle(.roundedBorder)
 
@@ -615,6 +628,7 @@ private struct CaptionPreviewTab: View {
         .onAppear(perform: renderPreview)
         .onChange(of: peopleText) { _, _ in renderPreview() }
         .onChange(of: placeText) { _, _ in renderPreview() }
+        .onChange(of: dateFormat) { _, _ in renderPreview() }
     }
 
     private func renderPreview() {
@@ -654,7 +668,7 @@ private struct CaptionPreviewTab: View {
             persons: persons,
             placeName: placeText
         )
-        if let (rendered, _) = try? ImageProcessor.addCaption(to: base, photo: photo) {
+        if let (rendered, _) = try? ImageProcessor.addCaption(to: base, photo: photo, dateFormat: dateFormat) {
             previewImage = NSImage(cgImage: rendered, size: NSSize(width: width, height: height))
         }
     }

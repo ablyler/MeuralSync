@@ -89,7 +89,7 @@ struct ImageProcessorTests {
         // Caption with park ride icon on landscape & panorama
         let photo = PhotoMetadata(
             uuid: "epcot-1",
-            date: Date(timeIntervalSince1970: 1_602_979_200),
+            date: Date(timeIntervalSince1970: 1_603_022_400), // 2020-10-18 12:00:00 UTC
             width: 1080,
             height: 540,
             persons: ["Robert Smith", "Jane Doe"],
@@ -107,6 +107,17 @@ struct ImageProcessorTests {
         #expect(layout.iconName == "ride-epcot-living-with-the-land")
         #expect(layout.rows.first?.text == "Pap, Jane")
         #expect(layout.rows.last?.text.contains("EPCOT · Living with the Land") == true)
+        #expect(layout.rows.last?.text.contains("Oct 18, 2020") == true)
+
+        // Verify all CaptionDateFormat options
+        let (_, isoLayout) = try ImageProcessor.addCaption(to: white, photo: photo, dateFormat: .iso)
+        #expect(isoLayout.rows.last?.text.hasPrefix("2020-10-18 · ") == true)
+        let (_, longLayout) = try ImageProcessor.addCaption(to: white, photo: photo, dateFormat: .long)
+        #expect(longLayout.rows.last?.text.hasPrefix("October 18, 2020 · ") == true)
+        let (_, numLayout) = try ImageProcessor.addCaption(to: white, photo: photo, dateFormat: .numeric)
+        #expect(numLayout.rows.last?.text.hasPrefix("10/18/2020 · ") == true)
+        let (_, monthYearLayout) = try ImageProcessor.addCaption(to: white, photo: photo, dateFormat: .monthYear)
+        #expect(monthYearLayout.rows.last?.text.hasPrefix("Oct 2020 · ") == true)
     }
 
     @Test("Landscape frame orientation resizes, fills 1920x1080, and combines portraits side-by-side")

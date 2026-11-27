@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreImage
 import CoreText
 import Foundation
 import ImageIO
@@ -127,6 +128,8 @@ public enum ImageProcessor {
     public static let meuralWidth = 1080
     public static let meuralHeight = 1920
 
+    private static let ciContext = CIContext()
+
     private static let cachedPreferredFontName: String = {
         let candidates = ["Lato-Regular", "Lato", "HelveticaNeue", "Helvetica", "ArialMT"]
         let available = (CTFontManagerCopyAvailablePostScriptNames() as? [String]).map(Set.init) ?? []
@@ -136,15 +139,21 @@ public enum ImageProcessor {
         return "HelveticaNeue"
     }()
 
-    private static func formatCaptionDate(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        f.locale = Locale(identifier: "en_US_POSIX")
-        return f.string(from: date)
-    }
+    private static let cachedPreferredMediumFontName: String = {
+        let candidates = ["Lato-Bold", "Lato-Semibold", "Lato-Medium", "HelveticaNeue-Medium", "Helvetica-Bold", "Arial-BoldMT"]
+        let available = (CTFontManagerCopyAvailablePostScriptNames() as? [String]).map(Set.init) ?? []
+        for name in candidates where available.contains(name) {
+            return name
+        }
+        return cachedPreferredFontName
+    }()
 
     public static func resolvePreferredFontName() -> String {
         cachedPreferredFontName
+    }
+
+    public static func resolvePreferredMediumFontName() -> String {
+        cachedPreferredMediumFontName
     }
 
     // MARK: - Loading & Saving
@@ -457,20 +466,39 @@ public enum ImageProcessor {
         includeList: [String]? = nil,
         locationAliases: [String: String]? = nil,
         personAliases: [String: String] = Captions.defaultPersonAliases,
+        dateFormat: CaptionDateFormat = .medium,
         measurer: any TextMeasuring = CoreTextMeasurer()
     ) -> CaptionLayout {
         let scale = min(1.0, Double(imageWidth) / 1080.0, Double(imageHeight) / 360.0)
-        let margin = max(1, Int((16.0 * scale).rounded()))
-        let padding = max(1, Int((12.0 * scale).rounded()))
-        let gap = max(1, Int((8.0 * scale).rounded()))
-        let maxWidth = Double(imageWidth - 2 * (margin + padding))
-        let primarySize = max(1, Int((36.0 * scale).rounded()))
-        let secondarySize = max(1, Int((24.0 * scale).rounded()))
+        let margin = max(1, Int((20.0 * scale).rounded()))
+        let padX = max(1, Int((20.0 * scale).rounded()))
+        let padYTop = max(1, Int((9.0 * scale).rounded()))
+        let padYBottom = max(1, Int((12.0 * scale).rounded()))
+        let rowGap = max(1, Int((7.0 * scale).rounded()))
+        let primarySize = max(1, Int((35.0 * scale).rounded()))
+        let secondarySize = max(1, Int((23.0 * scale).rounded()))
+
+        let formattedLocation = Captions.formatLocation(
+            photo.placeName,
+            aliases: locationAliases,
+            areasOfInterest: photo.areasOfInterest
+        )
+        let hasIcon = formattedLocation.iconName != nil
+        let hasNames = !Captions.displayPersonNames(
+            photo.persons,
+            includeList: includeList,
+            personAliases: personAliases
+        ).isEmpty
+
+        let iconSize = hasIcon ? max(1, Int(((hasNames ? 44.0 : 28.0) * scale).rounded())) : 0
+        let iconGap = hasIcon ? max(1, Int(((hasNames ? 14.0 : 9.0) * scale).rounded())) : 0
+        let iconSpace = hasIcon ? iconSize + iconGap : 0
+        let textMaxWidth = Double(imageWidth - 2 * (margin + padX) - iconSpace)
 
         let names = fitCaptionNames(
             persons: photo.persons,
             includeList: includeList,
-            maxWidth: maxWidth,
+            maxWidth: textMaxWidth,
             fontSize: Double(primarySize),
             personAliases: personAliases,
             measurer: measurer
@@ -481,82 +509,68 @@ public enum ImageProcessor {
             rawRows.append((names, primarySize))
         }
 
-        let formattedLocation = Captions.formatLocation(
-            photo.placeName,
-            aliases: locationAliases,
-            areasOfInterest: photo.areasOfInterest
-        )
-        var metadata = formatCaptionDate(photo.date)
+        var metadata = dateFormat.format(photo.date)
         if !formattedLocation.label.isEmpty {
-            metadata += "  ·  \(formattedLocation.label)"
+            metadata += " · \(formattedLocation.label)"
         }
 
-        let iconSize = formattedLocation.iconName != nil ? Int((Double(secondarySize) * 1.25).rounded()) : 0
-        let iconSpace = formattedLocation.iconName != nil ? iconSize + gap : 0
         let fittedMetadata = truncateTextToFit(
             metadata,
-            maxWidth: maxWidth - Double(iconSpace),
+            maxWidth: textMaxWidth,
             fontSize: Double(secondarySize),
             measurer: measurer
         )
         rawRows.append((fittedMetadata, secondarySize))
 
-        var top = margin + padding
+        var top = margin + padYTop
         var layoutRows: [CaptionRow] = []
-        var panelWidth = 0
+        var textPanelWidth = 0
 
-        for (index, (text, size)) in rawRows.enumerated() {
+        for (text, size) in rawRows {
             if text.isEmpty { continue }
             let metrics = measurer.measure(text, fontSize: Double(size))
-            var ascent = Int(ceil(metrics.ascender))
-            var descent = Int(ceil(abs(metrics.descender)))
-            let isMetadata = index == rawRows.count - 1
-            if isMetadata && iconSize > 0 {
-                // Center the icon on the optical middle of the metadata text's cap height.
-                let approxCapHeight = Double(size) * 0.72
-                let halfIcon = Double(iconSize) / 2.0
-                let iconAboveBaseline = Int(ceil(halfIcon + approxCapHeight / 2.0))
-                let iconBelowBaseline = Int(ceil(max(0.0, halfIcon - approxCapHeight / 2.0)))
-                ascent = max(ascent, iconAboveBaseline)
-                descent = max(descent, iconBelowBaseline)
-            }
+            let ascent = Int(ceil(metrics.ascender))
+            let descent = Int(ceil(abs(metrics.descender)))
             layoutRows.append(CaptionRow(text: text, fontSize: size, baselineY: top + ascent))
-            panelWidth = max(
-                panelWidth,
-                Int(ceil(metrics.textWidth)) + (isMetadata ? iconSpace : 0)
-            )
-            top += max(ascent + descent, Int(ceil(metrics.textHeight))) + gap
+            textPanelWidth = max(textPanelWidth, Int(ceil(metrics.textWidth)))
+            top += max(ascent + descent, Int(ceil(metrics.textHeight))) + rowGap
         }
 
+        let textBottom = top - rowGap + padYBottom
+        let minIconBottom = hasIcon ? (margin + padYTop + iconSize + padYBottom) : textBottom
         let bounds = CaptionBounds(
             left: margin,
             top: margin,
-            right: margin + panelWidth + 2 * padding,
-            bottom: top - gap + padding
+            right: margin + 2 * padX + iconSpace + textPanelWidth,
+            bottom: max(textBottom, minIconBottom)
         )
 
         return CaptionLayout(
             rows: layoutRows,
             bounds: bounds,
-            textLeft: margin + padding,
+            textLeft: margin + padX + iconSpace,
             iconName: formattedLocation.iconName,
             iconSize: iconSize,
-            gap: gap
+            gap: iconGap
         )
     }
 
-    /// Renders the translucent caption panel, optional Disney park/ride icon, and text onto the image.
+    /// Renders the frosted-glass caption pill, optional two-row left park/ride icon, and text onto the image.
     public static func addCaption(
         to image: CGImage,
         photo: PhotoMetadata,
         includeList: [String]? = nil,
         locationAliases: [String: String]? = nil,
         personAliases: [String: String] = Captions.defaultPersonAliases,
-        fontName: String = resolvePreferredFontName()
+        dateFormat: CaptionDateFormat = .medium,
+        fontName: String = resolvePreferredFontName(),
+        primaryFontName: String = resolvePreferredMediumFontName()
     ) throws -> (image: CGImage, layout: CaptionLayout) {
         let width = image.width
         let height = image.height
-        let measurer = CoreTextMeasurer(fontName: fontName)
+        let scale = min(1.0, Double(width) / 1080.0, Double(height) / 360.0)
+        let primaryMeasurer = CoreTextMeasurer(fontName: primaryFontName)
+        let secondaryMeasurer = CoreTextMeasurer(fontName: fontName)
         let layout = computeCaptionLayout(
             imageWidth: width,
             imageHeight: height,
@@ -564,7 +578,8 @@ public enum ImageProcessor {
             includeList: includeList,
             locationAliases: locationAliases,
             personAliases: personAliases,
-            measurer: measurer
+            dateFormat: dateFormat,
+            measurer: secondaryMeasurer
         )
 
         guard let ctx = makeSRGBContext(width: width, height: height) else {
@@ -574,41 +589,69 @@ public enum ImageProcessor {
         // Draw base image
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
-        // Draw translucent black panel (convert top-left bounds to CG bottom-left coordinates)
-        let panelWidth = layout.bounds.right - layout.bounds.left
-        let panelHeight = layout.bounds.bottom - layout.bounds.top
-        let panelCGY = height - layout.bounds.bottom
-        ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.65))
-        ctx.fill(CGRect(x: layout.bounds.left, y: panelCGY, width: panelWidth, height: panelHeight))
+        // Draw frosted-glass rounded pill (convert top-left bounds to CG bottom-left coordinates)
+        let panelWidth = CGFloat(layout.bounds.right - layout.bounds.left)
+        let panelHeight = CGFloat(layout.bounds.bottom - layout.bounds.top)
+        let panelCGY = CGFloat(height - layout.bounds.bottom)
+        let panelRect = CGRect(x: CGFloat(layout.bounds.left), y: panelCGY, width: panelWidth, height: panelHeight)
+        let cornerRadius = min(panelHeight / 2.0, max(4.0, CGFloat(15.0 * scale)))
+        let panelPath = CGPath(roundedRect: panelRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
 
-        // Draw rows and optional park/attraction icon
+        let blurSigma = max(2.0, 14.0 * scale)
+        let blurredCI = CIImage(cgImage: image)
+            .clampedToExtent()
+            .applyingGaussianBlur(sigma: blurSigma)
+            .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
+
+        ctx.saveGState()
+        ctx.addPath(panelPath)
+        ctx.clip()
+        if let blurredCG = ciContext.createCGImage(blurredCI, from: panelRect) {
+            ctx.draw(blurredCG, in: panelRect)
+        }
+        ctx.setFillColor(CGColor(srgbRed: 0.06, green: 0.08, blue: 0.11, alpha: 0.56))
+        ctx.fill(panelRect)
+        ctx.restoreGState()
+
+        // Subtle light hairline border
+        ctx.saveGState()
+        ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.20))
+        ctx.setLineWidth(max(1.0, CGFloat(1.25 * scale)))
+        ctx.addPath(panelPath)
+        ctx.strokePath()
+        ctx.restoreGState()
+
+        // Draw optional park/attraction icon vertically centered across the entire pill on the left
+        if let iconName = layout.iconName,
+           layout.iconSize > 0,
+           let iconURL = Captions.iconURL(for: iconName),
+           let iconImage = try? loadOrientedImage(from: iconURL)
+        {
+            let boxSize = CGFloat(layout.iconSize)
+            let scaleFactor = min(boxSize / CGFloat(iconImage.width), boxSize / CGFloat(iconImage.height))
+            let drawW = CGFloat(iconImage.width) * scaleFactor
+            let drawH = CGFloat(iconImage.height) * scaleFactor
+            let iconLeft = CGFloat(layout.textLeft - layout.iconSize - layout.gap)
+            let drawX = iconLeft + (boxSize - drawW) / 2.0
+            let pillCenterYTopLeft = CGFloat(layout.bounds.top + layout.bounds.bottom) / 2.0
+            let topInTopLeft = pillCenterYTopLeft - drawH / 2.0
+            let cgY = CGFloat(height) - topInTopLeft - drawH
+            ctx.saveGState()
+            ctx.setAlpha(0.92)
+            ctx.draw(iconImage, in: CGRect(x: drawX, y: cgY, width: drawW, height: drawH))
+            ctx.restoreGState()
+        }
+
+        // Draw left-aligned text rows
         for (index, row) in layout.rows.enumerated() {
-            var textLeft = layout.textLeft
-            let isMetadata = index == layout.rows.count - 1
-            let font = measurer.makeFont(size: Double(row.fontSize))
-
-            if isMetadata,
-               let iconName = layout.iconName,
-               let iconURL = Captions.iconURL(for: iconName),
-               let iconImage = try? loadOrientedImage(from: iconURL)
-            {
-                let boxSize = CGFloat(layout.iconSize)
-                let scaleFactor = min(boxSize / CGFloat(iconImage.width), boxSize / CGFloat(iconImage.height))
-                let drawW = CGFloat(iconImage.width) * scaleFactor
-                let drawH = CGFloat(iconImage.height) * scaleFactor
-                let drawX = CGFloat(layout.textLeft) + (boxSize - drawW) / 2.0
-                // Vertically center the icon on the optical middle of the text's cap height.
-                let capHeight = CTFontGetCapHeight(font)
-                let textCenterY = CGFloat(row.baselineY) - capHeight / 2.0
-                let topInTopLeft = textCenterY - drawH / 2.0
-                let cgY = CGFloat(height) - topInTopLeft - drawH
-                ctx.draw(iconImage, in: CGRect(x: drawX, y: cgY, width: drawW, height: drawH))
-                textLeft += layout.iconSize + layout.gap
-            }
-
+            let isPrimary = layout.rows.count > 1 && index == 0
+            let font = isPrimary
+                ? primaryMeasurer.makeFont(size: Double(row.fontSize))
+                : secondaryMeasurer.makeFont(size: Double(row.fontSize))
+            let textColor = CGColor(srgbRed: 1, green: 1, blue: 1, alpha: isPrimary ? 1.0 : 0.85)
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: font,
-                .foregroundColor: CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
+                .foregroundColor: textColor,
             ]
             let attrString = NSAttributedString(string: row.text, attributes: attrs)
             let line = CTLineCreateWithAttributedString(attrString)
@@ -616,7 +659,7 @@ public enum ImageProcessor {
 
             ctx.saveGState()
             ctx.textMatrix = .identity
-            ctx.textPosition = CGPoint(x: CGFloat(textLeft), y: baselineCGY)
+            ctx.textPosition = CGPoint(x: CGFloat(layout.textLeft), y: baselineCGY)
             CTLineDraw(line, ctx)
             ctx.restoreGState()
         }
@@ -635,6 +678,7 @@ public enum ImageProcessor {
         includeList: [String]?,
         locationAliases: [String: String]?,
         personAliases: [String: String] = Captions.defaultPersonAliases,
+        dateFormat: CaptionDateFormat = .medium,
         orientation: CanvasOrientation = .portrait,
         outputURL: URL
     ) throws -> CaptionLayout {
@@ -645,7 +689,8 @@ public enum ImageProcessor {
             photo: photo,
             includeList: includeList,
             locationAliases: locationAliases,
-            personAliases: personAliases
+            personAliases: personAliases,
+            dateFormat: dateFormat
         )
         try saveJPEG(captioned, to: outputURL)
         return layout
@@ -657,6 +702,7 @@ public enum ImageProcessor {
         includeList: [String]?,
         locationAliases: [String: String]?,
         personAliases: [String: String] = Captions.defaultPersonAliases,
+        dateFormat: CaptionDateFormat = .medium,
         orientation: CanvasOrientation = .portrait
     ) throws -> (image: CGImage, layout: CaptionLayout) {
         let resized = try resize(loaded, orientation: orientation)
@@ -665,7 +711,8 @@ public enum ImageProcessor {
             photo: photo,
             includeList: includeList,
             locationAliases: locationAliases,
-            personAliases: personAliases
+            personAliases: personAliases,
+            dateFormat: dateFormat
         )
     }
 

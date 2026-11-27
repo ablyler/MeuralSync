@@ -222,6 +222,39 @@ public enum CanvasOrientation: String, Codable, Sendable, Equatable {
     }
 }
 
+public enum CaptionDateFormat: String, Codable, Sendable, CaseIterable, Identifiable {
+    case medium
+    case long
+    case iso
+    case numeric
+    case monthYear
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .medium: return "Nov 27, 2026"
+        case .long: return "November 27, 2026"
+        case .iso: return "2026-11-27 (ISO)"
+        case .numeric: return "11/27/2026"
+        case .monthYear: return "Nov 2026"
+        }
+    }
+
+    public func format(_ date: Date, locale: Locale = Locale(identifier: "en_US_POSIX")) -> String {
+        let f = DateFormatter()
+        f.locale = locale
+        switch self {
+        case .medium: f.dateFormat = "MMM d, yyyy"
+        case .long: f.dateFormat = "MMMM d, yyyy"
+        case .iso: f.dateFormat = "yyyy-MM-dd"
+        case .numeric: f.dateFormat = "M/d/yyyy"
+        case .monthYear: f.dateFormat = "MMM yyyy"
+        }
+        return f.string(from: date)
+    }
+}
+
 public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID
 
@@ -237,6 +270,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
     public var people: PeopleFilter
     public var destinationAlbumName: String
     public var randomizeGalleryName: Bool
+    public var captionDateFormat: CaptionDateFormat
     public var captionLocationAliases: [String: String]
     public var captionPersonAliases: [String: String]
     public var maxConsecutiveUploadFailures: Int
@@ -259,6 +293,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         case people
         case destinationAlbumName = "destination_album_name"
         case randomizeGalleryName = "randomize_gallery_name"
+        case captionDateFormat = "caption_date_format"
         case captionLocationAliases = "caption_location_aliases"
         case captionPersonAliases = "caption_person_aliases"
         case maxConsecutiveUploadFailures = "max_consecutive_upload_failures"
@@ -279,6 +314,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         people: PeopleFilter = PeopleFilter(),
         destinationAlbumName: String = "Family Photos - :date:",
         randomizeGalleryName: Bool = true,
+        captionDateFormat: CaptionDateFormat = .medium,
         captionLocationAliases: [String: String] = [:],
         captionPersonAliases: [String: String] = [:],
         maxConsecutiveUploadFailures: Int = 3,
@@ -297,6 +333,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         self.people = people
         self.destinationAlbumName = destinationAlbumName
         self.randomizeGalleryName = randomizeGalleryName
+        self.captionDateFormat = captionDateFormat
         self.captionLocationAliases = captionLocationAliases
         self.captionPersonAliases = captionPersonAliases
         self.maxConsecutiveUploadFailures = max(1, min(50, maxConsecutiveUploadFailures))
@@ -323,6 +360,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         self.people = try container.decodeIfPresent(PeopleFilter.self, forKey: .people) ?? PeopleFilter()
         self.destinationAlbumName = try container.decodeIfPresent(String.self, forKey: .destinationAlbumName) ?? "Family Photos - :date:"
         self.randomizeGalleryName = try container.decodeIfPresent(Bool.self, forKey: .randomizeGalleryName) ?? false
+        self.captionDateFormat = try container.decodeIfPresent(CaptionDateFormat.self, forKey: .captionDateFormat) ?? .medium
         self.captionLocationAliases = try container.decodeIfPresent([String: String].self, forKey: .captionLocationAliases) ?? [:]
         self.captionPersonAliases = try container.decodeIfPresent([String: String].self, forKey: .captionPersonAliases) ?? [:]
         let rawMaxFailures = try container.decodeIfPresent(Int.self, forKey: .maxConsecutiveUploadFailures) ?? 3

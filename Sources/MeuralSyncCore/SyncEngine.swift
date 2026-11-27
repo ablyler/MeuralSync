@@ -339,6 +339,7 @@ public actor SyncEngine {
                             includeList: instance.people.include,
                             locationAliases: instance.captionLocationAliases,
                             personAliases: instance.captionPersonAliases,
+                            dateFormat: instance.captionDateFormat,
                             orientation: resolvedOrientation,
                             outputURL: outURL
                         )
@@ -350,6 +351,7 @@ public actor SyncEngine {
                             includeList: instance.people.include,
                             locationAliases: instance.captionLocationAliases,
                             personAliases: instance.captionPersonAliases,
+                            dateFormat: instance.captionDateFormat,
                             orientation: resolvedOrientation
                         )
                         return .pairedImage(captioned, photo.uuid, layout.rows.map(\.text).joined(separator: " | "))
