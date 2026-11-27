@@ -168,6 +168,11 @@ private struct InstanceEditorView: View {
                 TextField("Instance Name", text: $instance.name)
                 Toggle("Enabled", isOn: $instance.enabled)
                 Toggle("Push & Switch Devices After Sync", isOn: $instance.sendToDevices)
+                Picker("Frame Orientation", selection: $instance.frameOrientation) {
+                    ForEach(FrameOrientation.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
                 TextField("Gallery Name Template (:date:)", text: $instance.destinationAlbumName)
                 if MeuralClient.galleryTemplateRegex(for: instance.destinationAlbumName) == nil {
                     Text("Template should include at least 3 static characters (e.g. \"Family Photos - :date:\") so old galleries can be identified safely.")

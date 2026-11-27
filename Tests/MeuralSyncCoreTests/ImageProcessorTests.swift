@@ -109,6 +109,33 @@ struct ImageProcessorTests {
         #expect(layout.rows.last?.text.contains("EPCOT · Living with the Land") == true)
     }
 
+    @Test("Landscape frame orientation resizes, fills 1920x1080, and combines portraits side-by-side")
+    func landscapeFramePipeline() throws {
+        let landscape = makeSolidImage(width: 2400, height: 1200, r: 0.2, g: 0.6, b: 0.8)
+        let resizedLandscape = try ImageProcessor.resize(landscape, orientation: .landscape)
+        #expect(resizedLandscape.width == 1920)
+        #expect(resizedLandscape.height == 960)
+
+        let filledLandscape = try ImageProcessor.fillFullsize(resizedLandscape, orientation: .landscape)
+        #expect(filledLandscape.width == 1920)
+        #expect(filledLandscape.height == 1080)
+
+        let portrait = makeSolidImage(width: 1200, height: 1800, r: 0.8, g: 0.3, b: 0.2)
+        let resizedPortrait = try ImageProcessor.resize(portrait, orientation: .landscape)
+        #expect(resizedPortrait.height == 1080)
+        #expect(resizedPortrait.width == 720)
+
+        let combinedSideBySide = try ImageProcessor.combine(resizedPortrait, resizedPortrait, orientation: .landscape)
+        #expect(combinedSideBySide.width == 1920)
+        #expect(combinedSideBySide.height == 1080)
+
+        // Near-square portraits that exceed 1920 width together scale down proportionally without overlapping
+        let nearSquare = makeSolidImage(width: 1000, height: 1050, r: 0.4, g: 0.4, b: 0.9)
+        let combinedNearSquare = try ImageProcessor.combine(nearSquare, nearSquare, orientation: .landscape)
+        #expect(combinedNearSquare.width == 1920)
+        #expect(combinedNearSquare.height == 1080)
+    }
+
     @Test("Single oversized name preserves omitted count")
     func singleOversizedName() {
         let text = ImageProcessor.fitCaptionNames(

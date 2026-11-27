@@ -267,21 +267,41 @@ public actor SyncEngine {
         onProgress(SyncProgress(instanceName: instance.name, phase: "Connecting to Meural..."))
         try await client.ensureAuthenticated()
 
+        let resolvedOrientation: CanvasOrientation
+        switch instance.frameOrientation {
+        case .portrait:
+            resolvedOrientation = .portrait
+        case .landscape:
+            resolvedOrientation = .landscape
+        case .auto:
+            let devices = (try? await client.getDevices()) ?? []
+            if let detected = devices.compactMap(\.parsedOrientation).first {
+                resolvedOrientation = detected
+                log("Detected Meural frame orientation: \(detected.displayName) (\(detected.canvasWidth)×\(detected.canvasHeight))")
+            } else {
+                resolvedOrientation = .portrait
+                log("Frame orientation not reported by Meural; defaulting to Portrait (1080×1920)")
+            }
+        }
+
         let galleryName = Self.buildGalleryName(
             template: instance.destinationAlbumName,
             randomize: instance.randomizeGalleryName
         )
-        let gallery = try await client.getOrCreateGallery(name: galleryName)
+        let gallery = try await client.getOrCreateGallery(
+            name: galleryName,
+            orientation: resolvedOrientation.meuralAPIOrientation
+        )
         stateStore.recordGalleryID(gallery.id, for: stateKey)
         let existingItemIDs = gallery.itemIds
-        log("Using gallery '\(gallery.name)' (id: \(gallery.id))")
+        log("Using gallery '\(gallery.name)' (id: \(gallery.id), orientation: \(resolvedOrientation.meuralAPIOrientation))")
 
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("MeuralSync-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        var pendingLandscape: [(image: CGImage, uuid: String)] = []
+        var pendingPaired: [(image: CGImage, uuid: String)] = []
         var consecutiveFailures = 0
         var uploadedItemIDs = Set<Int>()
 
@@ -301,40 +321,45 @@ public actor SyncEngine {
                 defer { try? FileManager.default.removeItem(at: exportedURL) }
 
                 enum PreparedUpload {
-                    case portraitFile(URL, String)
-                    case landscapeImage(CGImage, String, String)
+                    case fullsizeFile(URL, String)
+                    case pairedImage(CGImage, String, String)
                 }
 
                 let prepared: PreparedUpload = try autoreleasepool {
                     let loaded = try ImageProcessor.loadOrientedImage(from: exportedURL)
-                    // Decide layout from actual oriented image dimensions; squares use fullsize portrait.
-                    if loaded.height >= loaded.width {
-                        let outURL = tempDir.appendingPathComponent("\(photo.uuid)-portrait.jpg")
-                        let layout = try ImageProcessor.processPortraitImage(
+                    // Match photo orientation to frame orientation; squares always use fullsize.
+                    let isFullsize = resolvedOrientation == .portrait
+                        ? (loaded.height >= loaded.width)
+                        : (loaded.width >= loaded.height)
+                    if isFullsize {
+                        let outURL = tempDir.appendingPathComponent("\(photo.uuid)-fullsize.jpg")
+                        let layout = try ImageProcessor.processFullsizeImage(
                             loaded,
                             photo: photo,
                             includeList: instance.people.include,
                             locationAliases: instance.captionLocationAliases,
                             personAliases: instance.captionPersonAliases,
+                            orientation: resolvedOrientation,
                             outputURL: outURL
                         )
-                        return .portraitFile(outURL, layout.rows.map(\.text).joined(separator: " | "))
+                        return .fullsizeFile(outURL, layout.rows.map(\.text).joined(separator: " | "))
                     } else {
-                        let (captioned, layout) = try ImageProcessor.processLandscapeImage(
+                        let (captioned, layout) = try ImageProcessor.processPairedImage(
                             loaded,
                             photo: photo,
                             includeList: instance.people.include,
                             locationAliases: instance.captionLocationAliases,
-                            personAliases: instance.captionPersonAliases
+                            personAliases: instance.captionPersonAliases,
+                            orientation: resolvedOrientation
                         )
-                        return .landscapeImage(captioned, photo.uuid, layout.rows.map(\.text).joined(separator: " | "))
+                        return .pairedImage(captioned, photo.uuid, layout.rows.map(\.text).joined(separator: " | "))
                     }
                 }
 
                 switch prepared {
-                case .portraitFile(let outURL, let captionSummary):
+                case .fullsizeFile(let outURL, let captionSummary):
                     defer { try? FileManager.default.removeItem(at: outURL) }
-                    log("Uploading portrait \(photo.uuid): \(captionSummary)")
+                    log("Uploading \(resolvedOrientation.rawValue) \(photo.uuid): \(captionSummary)")
                     let itemID = try await client.uploadItem(galleryID: gallery.id, fileURL: outURL)
                     stateStore.recordItemID(itemID, for: stateKey)
                     uploadedItemIDs.insert(itemID)
@@ -344,21 +369,22 @@ public actor SyncEngine {
                         try await Task.sleep(nanoseconds: UInt64(instance.uploadIntervalSeconds * 1_000_000_000))
                     }
 
-                case .landscapeImage(let captioned, let uuid, let captionSummary):
-                    log("Prepared landscape \(uuid): \(captionSummary)")
-                    pendingLandscape.append((captioned, uuid))
+                case .pairedImage(let captioned, let uuid, let captionSummary):
+                    let pairKind = resolvedOrientation == .portrait ? "landscape" : "portrait"
+                    log("Prepared \(pairKind) \(uuid): \(captionSummary)")
+                    pendingPaired.append((captioned, uuid))
 
-                    if pendingLandscape.count >= 2 {
-                        let first = pendingLandscape.removeLast()
-                        let second = pendingLandscape.removeLast()
+                    if pendingPaired.count >= 2 {
+                        let first = pendingPaired.removeLast()
+                        let second = pendingPaired.removeLast()
                         let outURL = tempDir.appendingPathComponent("combined-\(first.uuid)-\(second.uuid).jpg")
                         defer { try? FileManager.default.removeItem(at: outURL) }
 
                         try autoreleasepool {
-                            let combined = try ImageProcessor.combine(first.image, second.image)
+                            let combined = try ImageProcessor.combine(first.image, second.image, orientation: resolvedOrientation)
                             try ImageProcessor.saveJPEG(combined, to: outURL)
                         }
-                        log("Uploading combined landscapes \(first.uuid) + \(second.uuid)")
+                        log("Uploading combined \(pairKind)s \(first.uuid) + \(second.uuid)")
                         let itemID = try await client.uploadItem(galleryID: gallery.id, fileURL: outURL)
                         stateStore.recordItemID(itemID, for: stateKey)
                         uploadedItemIDs.insert(itemID)
@@ -390,17 +416,17 @@ public actor SyncEngine {
             }
         }
 
-        // Flush any single remaining odd landscape photo centered on a 1080x1920 canvas.
-        if let leftover = pendingLandscape.popLast() {
+        // Flush any single remaining odd paired photo centered on the frame canvas.
+        if let leftover = pendingPaired.popLast() {
             try Task.checkCancellation()
-            let outURL = tempDir.appendingPathComponent("\(leftover.uuid)-landscape-single.jpg")
+            let outURL = tempDir.appendingPathComponent("\(leftover.uuid)-single.jpg")
             defer { try? FileManager.default.removeItem(at: outURL) }
             do {
                 try autoreleasepool {
-                    let filled = try ImageProcessor.fillFullsize(leftover.image)
+                    let filled = try ImageProcessor.fillFullsize(leftover.image, orientation: resolvedOrientation)
                     try ImageProcessor.saveJPEG(filled, to: outURL)
                 }
-                log("Uploading remaining landscape \(leftover.uuid)")
+                log("Uploading remaining photo \(leftover.uuid)")
                 let itemID = try await client.uploadItem(galleryID: gallery.id, fileURL: outURL)
                 stateStore.recordItemID(itemID, for: stateKey)
                 uploadedItemIDs.insert(itemID)
@@ -409,7 +435,7 @@ public actor SyncEngine {
             } catch let error as URLError where error.code == .cancelled {
                 throw CancellationError()
             } catch {
-                log("Skipping remaining landscape \(leftover.uuid): \(error.localizedDescription)")
+                log("Skipping remaining photo \(leftover.uuid): \(error.localizedDescription)")
             }
         }
 

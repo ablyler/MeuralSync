@@ -184,12 +184,51 @@ public struct PeopleFilter: Codable, Sendable, Equatable {
     }
 }
 
+public enum FrameOrientation: String, Codable, Sendable, CaseIterable, Identifiable {
+    case auto
+    case portrait
+    case landscape
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .auto: return "Auto (from Meural)"
+        case .portrait: return "Portrait (1080×1920)"
+        case .landscape: return "Landscape (1920×1080)"
+        }
+    }
+}
+
+public enum CanvasOrientation: String, Codable, Sendable, Equatable {
+    case portrait
+    case landscape
+
+    public var canvasWidth: Int {
+        self == .portrait ? 1080 : 1920
+    }
+
+    public var canvasHeight: Int {
+        self == .portrait ? 1920 : 1080
+    }
+
+    /// Orientation string expected by the Meural API (`vertical` or `horizontal`).
+    public var meuralAPIOrientation: String {
+        self == .portrait ? "vertical" : "horizontal"
+    }
+
+    public var displayName: String {
+        self == .portrait ? "Portrait" : "Landscape"
+    }
+}
+
 public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID
 
     public var name: String
     public var enabled: Bool
     public var sendToDevices: Bool
+    public var frameOrientation: FrameOrientation
     public var photoCount: Int
     public var photoScoreCurationMin: Double?
     public var onThisDayPercent: Int?
@@ -211,6 +250,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         case name
         case enabled
         case sendToDevices = "send_to_devices"
+        case frameOrientation = "frame_orientation"
         case photoCount = "photo_count"
         case photoScoreCurationMin = "photo_score_curation_min"
         case onThisDayPercent = "on_this_day_percent"
@@ -230,6 +270,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         name: String,
         enabled: Bool = true,
         sendToDevices: Bool = true,
+        frameOrientation: FrameOrientation = .auto,
         photoCount: Int = 100,
         photoScoreCurationMin: Double? = 0.5,
         onThisDayPercent: Int? = 20,
@@ -247,6 +288,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         self.name = name
         self.enabled = enabled
         self.sendToDevices = sendToDevices
+        self.frameOrientation = frameOrientation
         self.photoCount = max(1, min(1000, photoCount))
         self.photoScoreCurationMin = photoScoreCurationMin.map { max(0.0, min(1.0, $0)) }
         self.onThisDayPercent = onThisDayPercent.map { max(0, min(100, $0)) }
@@ -267,6 +309,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         self.name = try container.decode(String.self, forKey: .name)
         self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         self.sendToDevices = try container.decodeIfPresent(Bool.self, forKey: .sendToDevices) ?? false
+        self.frameOrientation = try container.decodeIfPresent(FrameOrientation.self, forKey: .frameOrientation) ?? .auto
         let rawPhotoCount = try container.decodeIfPresent(Int.self, forKey: .photoCount) ?? 100
         self.photoCount = max(1, min(1000, rawPhotoCount))
         self.photoScoreCurationMin = (try container.decodeIfPresent(Double.self, forKey: .photoScoreCurationMin))

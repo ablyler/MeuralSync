@@ -244,16 +244,29 @@ public enum ImageProcessor {
 
     // MARK: - Core Operations
 
-    /// Resize an image to fit Meural display dimensions (landscape -> 1080px wide, portrait -> 1920px tall).
-    public static func resize(_ image: CGImage) throws -> CGImage {
+    /// Resize an image to fit Meural display dimensions for the given frame orientation.
+    /// - Portrait frame (`1080×1920`): landscape -> 1080px wide, portrait/square -> 1920px tall.
+    /// - Landscape frame (`1920×1080`): portrait -> 1080px tall, landscape/square -> 1920px wide.
+    public static func resize(_ image: CGImage, orientation: CanvasOrientation = .portrait) throws -> CGImage {
         let targetWidth: Int
         let targetHeight: Int
-        if image.width > image.height {
-            targetWidth = meuralWidth
-            targetHeight = max(1, Int(Double(image.height) * (Double(targetWidth) / Double(image.width))))
-        } else {
-            targetHeight = meuralHeight
-            targetWidth = max(1, Int(Double(image.width) * (Double(targetHeight) / Double(image.height))))
+        switch orientation {
+        case .portrait:
+            if image.width > image.height {
+                targetWidth = orientation.canvasWidth
+                targetHeight = max(1, Int(Double(image.height) * (Double(targetWidth) / Double(image.width))))
+            } else {
+                targetHeight = orientation.canvasHeight
+                targetWidth = max(1, Int(Double(image.width) * (Double(targetHeight) / Double(image.height))))
+            }
+        case .landscape:
+            if image.height > image.width {
+                targetHeight = orientation.canvasHeight
+                targetWidth = max(1, Int(Double(image.width) * (Double(targetHeight) / Double(image.height))))
+            } else {
+                targetWidth = orientation.canvasWidth
+                targetHeight = max(1, Int(Double(image.height) * (Double(targetWidth) / Double(image.width))))
+            }
         }
 
         guard let ctx = makeSRGBContext(width: targetWidth, height: targetHeight) else {
@@ -266,16 +279,18 @@ public enum ImageProcessor {
         return resized
     }
 
-    /// Extend an image to fill a 1080x1920 black canvas, centered.
-    public static func fillFullsize(_ image: CGImage) throws -> CGImage {
-        guard let ctx = makeSRGBContext(width: meuralWidth, height: meuralHeight) else {
+    /// Extend an image to fill a Meural black canvas (`1080×1920` portrait or `1920×1080` landscape), centered.
+    public static func fillFullsize(_ image: CGImage, orientation: CanvasOrientation = .portrait) throws -> CGImage {
+        let canvasW = orientation.canvasWidth
+        let canvasH = orientation.canvasHeight
+        guard let ctx = makeSRGBContext(width: canvasW, height: canvasH) else {
             throw ImageProcessingError.contextCreationFailed
         }
         ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 0, width: meuralWidth, height: meuralHeight))
+        ctx.fill(CGRect(x: 0, y: 0, width: canvasW, height: canvasH))
 
-        let originX = (meuralWidth - image.width) / 2
-        let originY = (meuralHeight - image.height) / 2
+        let originX = (canvasW - image.width) / 2
+        let originY = (canvasH - image.height) / 2
         ctx.draw(image, in: CGRect(x: originX, y: originY, width: image.width, height: image.height))
         guard let result = ctx.makeImage() else {
             throw ImageProcessingError.contextCreationFailed
@@ -283,42 +298,75 @@ public enum ImageProcessor {
         return result
     }
 
-    /// Combine two horizontal images vertically on a 1080x1920 black canvas with equal non-negative spacing.
-    public static func combine(_ imageA: CGImage, _ imageB: CGImage) throws -> CGImage {
-        var widthA = meuralWidth
-        var heightA = max(1, Int(Double(imageA.height) * (Double(meuralWidth) / Double(imageA.width))))
-        var widthB = meuralWidth
-        var heightB = max(1, Int(Double(imageB.height) * (Double(meuralWidth) / Double(imageB.width))))
-
-        // If two near-square images exceed the canvas height, scale both proportionally so they never overlap.
+    /// Combine two opposite-orientation images on a Meural black canvas with equal non-negative spacing:
+    /// - Portrait frame (`1080×1920`): stacks two landscape images vertically.
+    /// - Landscape frame (`1920×1080`): places two portrait images side-by-side horizontally.
+    public static func combine(
+        _ imageA: CGImage,
+        _ imageB: CGImage,
+        orientation: CanvasOrientation = .portrait
+    ) throws -> CGImage {
+        let canvasW = orientation.canvasWidth
+        let canvasH = orientation.canvasHeight
         let minSpacing = 12
-        let maxCombinedHeight = meuralHeight - 3 * minSpacing
-        if heightA + heightB > maxCombinedHeight {
-            let scale = Double(maxCombinedHeight) / Double(heightA + heightB)
-            widthA = max(1, Int((Double(widthA) * scale).rounded()))
-            heightA = max(1, Int((Double(heightA) * scale).rounded()))
-            widthB = max(1, Int((Double(widthB) * scale).rounded()))
-            heightB = max(1, Int((Double(heightB) * scale).rounded()))
-        }
 
-        let spacing = max(0, (meuralHeight - heightA - heightB) / 3)
-
-        guard let ctx = makeSRGBContext(width: meuralWidth, height: meuralHeight) else {
+        guard let ctx = makeSRGBContext(width: canvasW, height: canvasH) else {
             throw ImageProcessingError.contextCreationFailed
         }
         ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 0, width: meuralWidth, height: meuralHeight))
+        ctx.fill(CGRect(x: 0, y: 0, width: canvasW, height: canvasH))
 
-        // Core Graphics has bottom-left origin; top-left y=spacing maps to cgY = meuralHeight - y - height.
-        let topA = spacing
-        let topB = spacing + heightA + spacing
-        let cgYA = meuralHeight - topA - heightA
-        let cgYB = meuralHeight - topB - heightB
-        let originXA = (meuralWidth - widthA) / 2
-        let originXB = (meuralWidth - widthB) / 2
+        switch orientation {
+        case .portrait:
+            var widthA = canvasW
+            var heightA = max(1, Int(Double(imageA.height) * (Double(canvasW) / Double(imageA.width))))
+            var widthB = canvasW
+            var heightB = max(1, Int(Double(imageB.height) * (Double(canvasW) / Double(imageB.width))))
 
-        ctx.draw(imageA, in: CGRect(x: originXA, y: cgYA, width: widthA, height: heightA))
-        ctx.draw(imageB, in: CGRect(x: originXB, y: cgYB, width: widthB, height: heightB))
+            let maxCombinedHeight = canvasH - 3 * minSpacing
+            if heightA + heightB > maxCombinedHeight {
+                let scale = Double(maxCombinedHeight) / Double(heightA + heightB)
+                widthA = max(1, Int((Double(widthA) * scale).rounded()))
+                heightA = max(1, Int((Double(heightA) * scale).rounded()))
+                widthB = max(1, Int((Double(widthB) * scale).rounded()))
+                heightB = max(1, Int((Double(heightB) * scale).rounded()))
+            }
+
+            let spacing = max(0, (canvasH - heightA - heightB) / 3)
+            let topA = spacing
+            let topB = spacing + heightA + spacing
+            let cgYA = canvasH - topA - heightA
+            let cgYB = canvasH - topB - heightB
+            let originXA = (canvasW - widthA) / 2
+            let originXB = (canvasW - widthB) / 2
+
+            ctx.draw(imageA, in: CGRect(x: originXA, y: cgYA, width: widthA, height: heightA))
+            ctx.draw(imageB, in: CGRect(x: originXB, y: cgYB, width: widthB, height: heightB))
+
+        case .landscape:
+            var heightA = canvasH
+            var widthA = max(1, Int(Double(imageA.width) * (Double(canvasH) / Double(imageA.height))))
+            var heightB = canvasH
+            var widthB = max(1, Int(Double(imageB.width) * (Double(canvasH) / Double(imageB.height))))
+
+            let maxCombinedWidth = canvasW - 3 * minSpacing
+            if widthA + widthB > maxCombinedWidth {
+                let scale = Double(maxCombinedWidth) / Double(widthA + widthB)
+                widthA = max(1, Int((Double(widthA) * scale).rounded()))
+                heightA = max(1, Int((Double(heightA) * scale).rounded()))
+                widthB = max(1, Int((Double(widthB) * scale).rounded()))
+                heightB = max(1, Int((Double(heightB) * scale).rounded()))
+            }
+
+            let spacing = max(0, (canvasW - widthA - widthB) / 3)
+            let originXA = spacing
+            let originXB = spacing + widthA + spacing
+            let cgYA = (canvasH - heightA) / 2
+            let cgYB = (canvasH - heightB) / 2
+
+            ctx.draw(imageA, in: CGRect(x: originXA, y: cgYA, width: widthA, height: heightA))
+            ctx.draw(imageB, in: CGRect(x: originXB, y: cgYB, width: widthB, height: heightB))
+        }
 
         guard let result = ctx.makeImage() else {
             throw ImageProcessingError.contextCreationFailed
@@ -572,16 +620,17 @@ public enum ImageProcessor {
 
     // MARK: - File-Based Convenience Pipeline
 
-    public static func processPortraitImage(
+    public static func processFullsizeImage(
         _ loaded: CGImage,
         photo: PhotoMetadata,
         includeList: [String]?,
         locationAliases: [String: String]?,
         personAliases: [String: String] = Captions.defaultPersonAliases,
+        orientation: CanvasOrientation = .portrait,
         outputURL: URL
     ) throws -> CaptionLayout {
-        let resized = try resize(loaded)
-        let filled = try fillFullsize(resized)
+        let resized = try resize(loaded, orientation: orientation)
+        let filled = try fillFullsize(resized, orientation: orientation)
         let (captioned, layout) = try addCaption(
             to: filled,
             photo: photo,
@@ -593,6 +642,43 @@ public enum ImageProcessor {
         return layout
     }
 
+    public static func processPairedImage(
+        _ loaded: CGImage,
+        photo: PhotoMetadata,
+        includeList: [String]?,
+        locationAliases: [String: String]?,
+        personAliases: [String: String] = Captions.defaultPersonAliases,
+        orientation: CanvasOrientation = .portrait
+    ) throws -> (image: CGImage, layout: CaptionLayout) {
+        let resized = try resize(loaded, orientation: orientation)
+        return try addCaption(
+            to: resized,
+            photo: photo,
+            includeList: includeList,
+            locationAliases: locationAliases,
+            personAliases: personAliases
+        )
+    }
+
+    public static func processPortraitImage(
+        _ loaded: CGImage,
+        photo: PhotoMetadata,
+        includeList: [String]?,
+        locationAliases: [String: String]?,
+        personAliases: [String: String] = Captions.defaultPersonAliases,
+        outputURL: URL
+    ) throws -> CaptionLayout {
+        try processFullsizeImage(
+            loaded,
+            photo: photo,
+            includeList: includeList,
+            locationAliases: locationAliases,
+            personAliases: personAliases,
+            orientation: .portrait,
+            outputURL: outputURL
+        )
+    }
+
     public static func processPortraitFile(
         sourceURL: URL,
         photo: PhotoMetadata,
@@ -602,12 +688,13 @@ public enum ImageProcessor {
         outputURL: URL
     ) throws -> CaptionLayout {
         let loaded = try loadOrientedImage(from: sourceURL)
-        return try processPortraitImage(
+        return try processFullsizeImage(
             loaded,
             photo: photo,
             includeList: includeList,
             locationAliases: locationAliases,
             personAliases: personAliases,
+            orientation: .portrait,
             outputURL: outputURL
         )
     }
@@ -619,13 +706,13 @@ public enum ImageProcessor {
         locationAliases: [String: String]?,
         personAliases: [String: String] = Captions.defaultPersonAliases
     ) throws -> (image: CGImage, layout: CaptionLayout) {
-        let resized = try resize(loaded)
-        return try addCaption(
-            to: resized,
+        try processPairedImage(
+            loaded,
             photo: photo,
             includeList: includeList,
             locationAliases: locationAliases,
-            personAliases: personAliases
+            personAliases: personAliases,
+            orientation: .portrait
         )
     }
 

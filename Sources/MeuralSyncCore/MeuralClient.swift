@@ -56,12 +56,87 @@ public enum MeuralAPIError: Error, LocalizedError, Sendable {
 public struct MeuralDevice: Codable, Sendable, Equatable, Identifiable {
     public let id: Int
     public let alias: String?
+    public let orientation: String?
     public let galleryIds: [Int]?
 
-    public init(id: Int, alias: String? = nil, galleryIds: [Int]? = nil) {
+    public init(id: Int, alias: String? = nil, orientation: String? = nil, galleryIds: [Int]? = nil) {
         self.id = id
         self.alias = alias
+        self.orientation = orientation
         self.galleryIds = galleryIds
+    }
+
+    public var parsedOrientation: CanvasOrientation? {
+        guard let raw = orientation?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+            return nil
+        }
+        if raw == "horizontal" || raw == "landscape" {
+            return .landscape
+        }
+        if raw == "vertical" || raw == "portrait" {
+            return .portrait
+        }
+        return nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case alias
+        case name
+        case orientation
+        case galleryIds
+        case galleries
+        case activeGallery
+        case activeGallerySnake = "active_gallery"
+    }
+
+    private struct GalleryRef: Decodable {
+        let id: Int
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(Int.self, forKey: .id)
+        let decodedAlias = try container.decodeIfPresent(String.self, forKey: .alias)
+        let decodedName = try container.decodeIfPresent(String.self, forKey: .name)
+        self.alias = (decodedAlias?.isEmpty == false ? decodedAlias : nil)
+            ?? (decodedName?.isEmpty == false ? decodedName : nil)
+        self.orientation = try container.decodeIfPresent(String.self, forKey: .orientation)
+
+        var ids: [Int]? = try container.decodeIfPresent([Int].self, forKey: .galleryIds)
+        if ids == nil {
+            if let intGalleries = try? container.decodeIfPresent([Int].self, forKey: .galleries) {
+                ids = intGalleries
+            } else if let objGalleries = try? container.decodeIfPresent([GalleryRef].self, forKey: .galleries) {
+                ids = objGalleries.map(\.id)
+            }
+        }
+        if let activeObj = try? container.decodeIfPresent(GalleryRef.self, forKey: .activeGallery) {
+            var merged = ids ?? []
+            if !merged.contains(activeObj.id) { merged.append(activeObj.id) }
+            ids = merged
+        } else if let activeObj = try? container.decodeIfPresent(GalleryRef.self, forKey: .activeGallerySnake) {
+            var merged = ids ?? []
+            if !merged.contains(activeObj.id) { merged.append(activeObj.id) }
+            ids = merged
+        } else if let activeID = try? container.decodeIfPresent(Int.self, forKey: .activeGallery) {
+            var merged = ids ?? []
+            if !merged.contains(activeID) { merged.append(activeID) }
+            ids = merged
+        } else if let activeID = try? container.decodeIfPresent(Int.self, forKey: .activeGallerySnake) {
+            var merged = ids ?? []
+            if !merged.contains(activeID) { merged.append(activeID) }
+            ids = merged
+        }
+        self.galleryIds = ids
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(alias, forKey: .alias)
+        try container.encodeIfPresent(orientation, forKey: .orientation)
+        try container.encodeIfPresent(galleryIds, forKey: .galleryIds)
     }
 }
 
@@ -432,6 +507,29 @@ public actor MeuralClient {
         return all
     }
 
+    public func getDeviceGalleries(deviceID: Int) async throws -> [MeuralGallery] {
+        struct Response: Decodable { let data: [MeuralGallery] }
+        var all: [MeuralGallery] = []
+        var seenIDs = Set<Int>()
+        let pageSize = 100
+        for page in 1...100 {
+            let data = try await performAuthenticated(policy: standardRetry) {
+                try self.makeRequest(path: "/devices/\(deviceID)/galleries?count=\(pageSize)&page=\(page)", method: "GET")
+            }
+            let pageGalleries = try JSONDecoder().decode(Response.self, from: data).data
+            if pageGalleries.isEmpty { break }
+            var addedAny = false
+            for gallery in pageGalleries where seenIDs.insert(gallery.id).inserted {
+                all.append(gallery)
+                addedAny = true
+            }
+            if !addedAny {
+                break
+            }
+        }
+        return all
+    }
+
     public func getGallery(id galleryID: Int) async throws -> MeuralGallery {
         struct Response: Decodable { let data: MeuralGallery }
         let data = try await performAuthenticated(policy: standardRetry) {
@@ -440,12 +538,12 @@ public actor MeuralClient {
         return try JSONDecoder().decode(Response.self, from: data).data
     }
 
-    public func createGallery(name: String, description: String = "") async throws -> MeuralGallery {
+    public func createGallery(name: String, description: String = "", orientation: String = "vertical") async throws -> MeuralGallery {
         struct Response: Decodable { let data: MeuralGallery }
         let formBody = [
             "name=\(Self.formEncode(name))",
             "description=\(Self.formEncode(description))",
-            "orientation=horizontal",
+            "orientation=\(Self.formEncode(orientation))",
         ].joined(separator: "&")
 
         let data = try await performAuthenticated(policy: standardRetry) {
@@ -457,12 +555,12 @@ public actor MeuralClient {
         return try JSONDecoder().decode(Response.self, from: data).data
     }
 
-    public func getOrCreateGallery(name: String) async throws -> MeuralGallery {
+    public func getOrCreateGallery(name: String, orientation: String = "vertical") async throws -> MeuralGallery {
         let galleries = try await getGalleries()
         if let existing = galleries.first(where: { $0.name == name }) {
             return existing
         }
-        return try await createGallery(name: name)
+        return try await createGallery(name: name, orientation: orientation)
     }
 
     public func deleteGallery(id galleryID: Int) async throws {

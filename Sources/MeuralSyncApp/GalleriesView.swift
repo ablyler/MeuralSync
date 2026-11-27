@@ -39,6 +39,9 @@ struct GalleriesView: View {
 
     @State private var selectedInstanceID: UUID?
     @State private var galleries: [MeuralGallery] = []
+    @State private var deviceGalleryIDs: Set<Int> = []
+    @State private var detectedOrientation: CanvasOrientation?
+    @State private var showAllAccountAlbums = false
     @State private var trackedGalleryIDs: Set<Int> = []
     @State private var selectedGalleryID: Int?
     @State private var items: [MeuralItem] = []
@@ -72,9 +75,16 @@ struct GalleriesView: View {
             ?? appState.config.instances.first
     }
 
+    private var displayedGalleries: [MeuralGallery] {
+        if showAllAccountAlbums {
+            return galleries
+        }
+        return galleries.filter { deviceGalleryIDs.contains($0.id) }
+    }
+
     private var selectedGallery: MeuralGallery? {
         guard let selectedGalleryID else { return nil }
-        return galleries.first(where: { $0.id == selectedGalleryID })
+        return displayedGalleries.first(where: { $0.id == selectedGalleryID })
     }
 
     private var mutationsDisabled: Bool {
@@ -253,6 +263,37 @@ struct GalleriesView: View {
                     .font(.headline)
             }
 
+            Picker("Filter", selection: $showAllAccountAlbums) {
+                Text("On Frame").tag(false)
+                Text("All").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 150)
+            .help("Show only albums loaded on your Meural frame, or all albums on the account")
+            .onChange(of: showAllAccountAlbums) { _, _ in
+                if let current = selectedGalleryID,
+                   !displayedGalleries.contains(where: { $0.id == current })
+                {
+                    selectedGalleryID = displayedGalleries.first?.id
+                } else if selectedGalleryID == nil {
+                    selectedGalleryID = displayedGalleries.first?.id
+                }
+            }
+
+            if let orientation = detectedOrientation {
+                Label(
+                    orientation.displayName,
+                    systemImage: orientation == .landscape ? "rectangle" : "rectangle.portrait"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.secondary.opacity(0.12), in: Capsule())
+                .help("Detected Meural frame orientation")
+            }
+
             Spacer()
 
             if isLoadingGalleries || isLoadingItems || appState.isMutatingGalleries {
@@ -300,14 +341,26 @@ struct GalleriesView: View {
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if galleries.isEmpty {
-                ContentUnavailableView(
-                    "No Albums",
-                    systemImage: "photo.stack",
-                    description: Text("No albums were found on this Meural account.")
-                )
+            } else if displayedGalleries.isEmpty {
+                if !showAllAccountAlbums && !galleries.isEmpty {
+                    ContentUnavailableView {
+                        Label("No Albums on Frame", systemImage: "tv")
+                    } description: {
+                        Text("None of this account's \(galleries.count) album(s) are currently loaded on the Meural frame.")
+                    } actions: {
+                        Button("Show All Account Albums") {
+                            showAllAccountAlbums = true
+                        }
+                    }
+                } else {
+                    ContentUnavailableView(
+                        "No Albums",
+                        systemImage: "photo.stack",
+                        description: Text("No albums were found on this Meural account.")
+                    )
+                }
             } else {
-                List(galleries, selection: $selectedGalleryID) { gallery in
+                List(displayedGalleries, selection: $selectedGalleryID) { gallery in
                     let managed = trackedGalleryIDs.contains(gallery.id) || {
                         guard let regex = templateRegex else { return false }
                         let range = NSRange(gallery.name.startIndex..<gallery.name.endIndex, in: gallery.name)
@@ -403,6 +456,8 @@ struct GalleriesView: View {
         let generation = galleriesLoadGeneration
 
         galleries = []
+        deviceGalleryIDs = []
+        detectedOrientation = nil
         items = []
         trackedGalleryIDs = []
         selectedGalleryID = nil
@@ -423,12 +478,38 @@ struct GalleriesView: View {
 
         do {
             let client = appState.makeMeuralClient(for: instance)
-            let fetched = try await client.getGalleries()
+            async let fetchedGalleriesTask = client.getGalleries()
+            async let fetchedDevicesTask = client.getDevices()
+
+            let fetched = try await fetchedGalleriesTask
+            let devices = (try? await fetchedDevicesTask) ?? []
+
+            var matchedIDs = Set<Int>()
+            var extraGalleriesByID: [Int: MeuralGallery] = [:]
+            for device in devices {
+                if let ids = device.galleryIds {
+                    matchedIDs.formUnion(ids)
+                }
+                if let deviceGalleries = try? await client.getDeviceGalleries(deviceID: device.id) {
+                    for g in deviceGalleries {
+                        matchedIDs.insert(g.id)
+                        extraGalleriesByID[g.id] = g
+                    }
+                }
+            }
+
             guard !Task.isCancelled, generation == galleriesLoadGeneration, selectedInstance?.id == instanceID else {
                 return
             }
-            galleries = fetched.sorted { $0.id > $1.id }
-            selectedGalleryID = galleries.first?.id
+
+            var mergedByID: [Int: MeuralGallery] = extraGalleriesByID
+            for g in fetched {
+                mergedByID[g.id] = g
+            }
+            galleries = mergedByID.values.sorted { $0.id > $1.id }
+            deviceGalleryIDs = matchedIDs
+            detectedOrientation = devices.compactMap(\.parsedOrientation).first
+            selectedGalleryID = displayedGalleries.first?.id
         } catch is CancellationError {
             // Cancelled due to instance switch or refresh.
         } catch let err as URLError where err.code == .cancelled {
@@ -501,6 +582,7 @@ struct GalleriesView: View {
             } else {
                 let label = count == 1 ? "1 Meural frame" : "\(count) Meural frames"
                 statusMessage = "Sent '\(gallery.name)' to \(label)."
+                deviceGalleryIDs.insert(gallery.id)
                 appState.clearPendingDevicePush(for: instance)
                 appState.appendLog("Manually sent album '\(gallery.name)' (id: \(gallery.id)) to \(label).")
             }

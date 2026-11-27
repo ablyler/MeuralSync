@@ -823,4 +823,116 @@ struct CoreIntegrationTests {
         )
         #expect(stateStore.pendingDevicePush(for: instance.storageKey) == nil)
     }
+
+    @Test("MeuralDevice decodes orientation and gallery variants; SyncEngine auto-detects landscape frame")
+    func deviceOrientationAndLandscapeSync() async throws {
+        let json = Data(#"""
+        {
+            "id": 42,
+            "name": "Living Room Horizontal",
+            "orientation": "Horizontal",
+            "galleries": [{"id": 101}, {"id": 102}],
+            "active_gallery": {"id": 103}
+        }
+        """#.utf8)
+        let device = try JSONDecoder().decode(MeuralDevice.self, from: json)
+        #expect(device.alias == "Living Room Horizontal")
+        #expect(device.parsedOrientation == .landscape)
+        #expect(Set(device.galleryIds ?? []) == Set([101, 102, 103]))
+
+        let verticalJSON = Data(#"{"id":43,"alias":"Hallway","orientation":"vertical","galleryIds":[201]}"#.utf8)
+        let verticalDevice = try JSONDecoder().decode(MeuralDevice.self, from: verticalJSON)
+        #expect(verticalDevice.parsedOrientation == .portrait)
+        #expect(verticalDevice.galleryIds == [201])
+
+        // Verify SyncEngine auto-detects horizontal orientation and creates gallery with orientation=horizontal
+        struct LandscapeLib: PhotoLibraryProviding {
+            let photos: [PhotoMetadata]
+            func fetchAllPersonNames() async throws -> [String] { [] }
+            func queryPhotos(options: PhotosQueryOptions) async throws -> [PhotoMetadata] { photos }
+            func enrichLocations(for photos: [PhotoMetadata]) async -> [PhotoMetadata] { photos }
+        }
+        struct LandscapeExp: PhotoExporting {
+            func exportPhoto(_ photo: PhotoMetadata, toDirectory directory: URL) async throws -> URL {
+                let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+                let ctx = CGContext(
+                    data: nil,
+                    width: photo.width,
+                    height: photo.height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: photo.width * 4,
+                    space: cs,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+                )!
+                ctx.setFillColor(CGColor(srgbRed: 0.2, green: 0.7, blue: 0.4, alpha: 1))
+                ctx.fill(CGRect(x: 0, y: 0, width: photo.width, height: photo.height))
+                let outURL = directory.appendingPathComponent("\(photo.uuid).jpg")
+                try ImageProcessor.saveJPEG(ctx.makeImage()!, to: outURL)
+                return outURL
+            }
+        }
+
+        let credStore = InMemoryCredentialStore()
+        let instance = InstanceConfig(
+            name: "Horizontal Frame",
+            enabled: true,
+            sendToDevices: false,
+            frameOrientation: .auto,
+            photoCount: 3,
+            destinationAlbumName: "Landscape Sync",
+            randomizeGalleryName: false,
+            uploadIntervalSeconds: 0
+        )
+        try credStore.setCredentials(MeuralCredentials(email: "u@example.com", password: "pw"), for: instance.storageKey)
+
+        var createdGalleryBody: String?
+        var uploadCount = 0
+        let transport = MockTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            let method = request.httpMethod ?? "GET"
+            if url.contains("cognito-idp") {
+                return (Data(#"{"AuthenticationResult":{"AccessToken":"tok"}}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/devices") {
+                return (Data(#"{"data":[{"id":42,"alias":"Horizontal","orientation":"horizontal","galleryIds":[]}]}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/galleries") {
+                return (Data(#"{"data":[]}"#.utf8), 200)
+            }
+            if method == "POST" && url.hasSuffix("/galleries") {
+                createdGalleryBody = request.httpBody.flatMap { String(data: $0, encoding: .utf8) }
+                return (Data(#"{"data":{"id":88,"name":"Landscape Sync","items":[]}}"#.utf8), 200)
+            }
+            if method == "POST" && url.hasSuffix("/items") {
+                uploadCount += 1
+                return (Data("{\"data\":{\"id\":\(800 + uploadCount)}}".utf8), 200)
+            }
+            if method == "POST" && url.contains("/galleries/88/items/") {
+                return (Data(#"{}"#.utf8), 200)
+            }
+            return (Data(#"{"data":[]}"#.utf8), 200)
+        }
+
+        // 1 landscape (fullsize) + 2 portraits (paired side-by-side into 1 upload) => 2 uploads total!
+        let photos = [
+            PhotoMetadata(uuid: "L1", date: Date(), width: 1600, height: 1000, curationScore: 0.9),
+            PhotoMetadata(uuid: "P1", date: Date(), width: 800, height: 1200, curationScore: 0.9),
+            PhotoMetadata(uuid: "P2", date: Date(), width: 800, height: 1200, curationScore: 0.9),
+        ]
+
+        let engine = SyncEngine()
+        try await engine.runSync(
+            config: AppConfig(instances: [instance]),
+            credentialStore: credStore,
+            photoLibrary: LandscapeLib(photos: photos),
+            exporter: LandscapeExp(),
+            stateStore: InMemorySyncStateStore(),
+            clientFactory: { key, store, logHandler in
+                MeuralClient(instanceName: key, credentialStore: store, transport: transport, sleepHandler: { _ in }, logHandler: logHandler)
+            }
+        )
+
+        #expect(createdGalleryBody?.contains("orientation=horizontal") == true)
+        #expect(uploadCount == 2)
+    }
 }
