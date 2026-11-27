@@ -85,8 +85,49 @@ public enum Captions {
         "Animal Kingdom",
     ]
 
+    private final class BundleFinder {}
+
+    /// Safely locate the `MeuralSync_MeuralSyncCore.bundle` resource bundle without
+    /// calling SwiftPM's generated `Bundle.module` accessor (which `fatalError`s on
+    /// Swift 6.0/6.1 when the bundle is placed in `Contents/Resources/` of a `.app`).
+    public static let resourceBundle: Bundle? = {
+        let bundleName = "MeuralSync_MeuralSyncCore.bundle"
+        var candidates: [URL] = []
+        if let resourceURL = Bundle.main.resourceURL {
+            candidates.append(resourceURL)
+        }
+        candidates.append(Bundle.main.bundleURL)
+        if let execDir = Bundle.main.executableURL?.deletingLastPathComponent() {
+            candidates.append(execDir)
+        }
+        let classBundle = Bundle(for: BundleFinder.self)
+        if let resourceURL = classBundle.resourceURL {
+            candidates.append(resourceURL)
+        }
+        candidates.append(classBundle.bundleURL)
+        candidates.append(classBundle.bundleURL.deletingLastPathComponent())
+
+        for bundle in Bundle.allBundles + Bundle.allFrameworks {
+            if let resourceURL = bundle.resourceURL {
+                candidates.append(resourceURL)
+            }
+            candidates.append(bundle.bundleURL)
+            candidates.append(bundle.bundleURL.deletingLastPathComponent())
+        }
+
+        var seen = Set<String>()
+        for directory in candidates {
+            let candidate = directory.appendingPathComponent(bundleName)
+            guard seen.insert(candidate.path).inserted else { continue }
+            if let found = Bundle(url: candidate) {
+                return found
+            }
+        }
+        return nil
+    }()
+
     public static let attractions: [AttractionEntry] = {
-        guard let url = Bundle.module.url(
+        guard let url = resourceBundle?.url(
             forResource: "attractions",
             withExtension: "json",
             subdirectory: "parks"
@@ -122,7 +163,7 @@ public enum Captions {
         if FileManager.default.fileExists(atPath: overrideURL.path) {
             return overrideURL
         }
-        return Bundle.module.url(forResource: iconName, withExtension: "png", subdirectory: "parks")
+        return resourceBundle?.url(forResource: iconName, withExtension: "png", subdirectory: "parks")
     }
 
     // MARK: - People

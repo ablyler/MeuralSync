@@ -114,6 +114,7 @@ struct CaptionsTests {
         #expect(Captions.formatLocation(nil) == FormattedLocation(label: "", iconName: nil))
 
         // Verify entire bundled catalog
+        #expect(Captions.resourceBundle != nil)
         #expect(Captions.attractions.count >= 34)
         for entry in Captions.attractions {
             #expect(Captions.iconURL(for: entry.icon) != nil)
