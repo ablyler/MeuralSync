@@ -128,7 +128,8 @@ public enum ImageProcessor {
     public static let meuralWidth = 1080
     public static let meuralHeight = 1920
 
-    private static let ciContext = CIContext()
+    // CIContext is documented thread-safe; nonisolated(unsafe) is needed for Swift 6.0/6.1 SDKs where CIContext lacks Sendable.
+    nonisolated(unsafe) private static let ciContext = CIContext()
 
     private static let cachedPreferredFontName: String = {
         let candidates = ["Lato-Regular", "Lato", "HelveticaNeue", "Helvetica", "ArialMT"]
