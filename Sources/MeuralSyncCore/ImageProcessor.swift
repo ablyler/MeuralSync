@@ -491,7 +491,7 @@ public enum ImageProcessor {
             metadata += "  ·  \(formattedLocation.label)"
         }
 
-        let iconSize = formattedLocation.iconName != nil ? Int((Double(secondarySize) * 1.5).rounded()) : 0
+        let iconSize = formattedLocation.iconName != nil ? Int((Double(secondarySize) * 1.25).rounded()) : 0
         let iconSpace = formattedLocation.iconName != nil ? iconSize + gap : 0
         let fittedMetadata = truncateTextToFit(
             metadata,
@@ -509,10 +509,16 @@ public enum ImageProcessor {
             if text.isEmpty { continue }
             let metrics = measurer.measure(text, fontSize: Double(size))
             var ascent = Int(ceil(metrics.ascender))
-            let descent = Int(ceil(abs(metrics.descender)))
+            var descent = Int(ceil(abs(metrics.descender)))
             let isMetadata = index == rawRows.count - 1
-            if isMetadata {
-                ascent = max(ascent, iconSize)
+            if isMetadata && iconSize > 0 {
+                // Center the icon on the optical middle of the metadata text's cap height.
+                let approxCapHeight = Double(size) * 0.72
+                let halfIcon = Double(iconSize) / 2.0
+                let iconAboveBaseline = Int(ceil(halfIcon + approxCapHeight / 2.0))
+                let iconBelowBaseline = Int(ceil(max(0.0, halfIcon - approxCapHeight / 2.0)))
+                ascent = max(ascent, iconAboveBaseline)
+                descent = max(descent, iconBelowBaseline)
             }
             layoutRows.append(CaptionRow(text: text, fontSize: size, baselineY: top + ascent))
             panelWidth = max(
@@ -579,6 +585,7 @@ public enum ImageProcessor {
         for (index, row) in layout.rows.enumerated() {
             var textLeft = layout.textLeft
             let isMetadata = index == layout.rows.count - 1
+            let font = measurer.makeFont(size: Double(row.fontSize))
 
             if isMetadata,
                let iconName = layout.iconName,
@@ -590,13 +597,15 @@ public enum ImageProcessor {
                 let drawW = CGFloat(iconImage.width) * scaleFactor
                 let drawH = CGFloat(iconImage.height) * scaleFactor
                 let drawX = CGFloat(layout.textLeft) + (boxSize - drawW) / 2.0
-                let topInTopLeft = CGFloat(row.baselineY - layout.iconSize) + (boxSize - drawH) / 2.0
+                // Vertically center the icon on the optical middle of the text's cap height.
+                let capHeight = CTFontGetCapHeight(font)
+                let textCenterY = CGFloat(row.baselineY) - capHeight / 2.0
+                let topInTopLeft = textCenterY - drawH / 2.0
                 let cgY = CGFloat(height) - topInTopLeft - drawH
                 ctx.draw(iconImage, in: CGRect(x: drawX, y: cgY, width: drawW, height: drawH))
                 textLeft += layout.iconSize + layout.gap
             }
 
-            let font = measurer.makeFont(size: Double(row.fontSize))
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: font,
                 .foregroundColor: CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
