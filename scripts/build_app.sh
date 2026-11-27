@@ -30,6 +30,11 @@ for bundle in "$BUILD_DIR"/*.bundle; do
     fi
 done
 
+# Copy AppIcon.icns if present
+if [ -f "$ROOT_DIR/Assets/AppIcon.icns" ]; then
+    cp "$ROOT_DIR/Assets/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+fi
+
 # Embed Sparkle.framework if built by SwiftPM
 SPARKLE_FW="$BUILD_DIR/Sparkle.framework"
 if [ -d "$SPARKLE_FW" ]; then
@@ -59,6 +64,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
     <string>en</string>
     <key>CFBundleExecutable</key>
     <string>MeuralSync</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.ablyler.MeuralSync</string>
     <key>CFBundleInfoDictionaryVersion</key>
