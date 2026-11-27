@@ -1,0 +1,255 @@
+[
+  {
+    "park": "Magic Kingdom",
+    "label": "Space Mountain",
+    "aliases": [],
+    "icon": "ride-mk-space-mountain"
+  },
+  {
+    "park": "Magic Kingdom",
+    "label": "Big Thunder Mountain Railroad",
+    "aliases": [
+      "Big Thunder Mountain"
+    ],
+    "icon": "ride-mk-big-thunder-mountain-railroad"
+  },
+  {
+    "park": "Magic Kingdom",
+    "label": "Haunted Mansion",
+    "aliases": [
+      "The Haunted Mansion"
+    ],
+    "icon": "ride-mk-haunted-mansion"
+  },
+  {
+    "park": "Magic Kingdom",
+    "label": "Pirates of the Caribbean",
+    "aliases": [],
+    "icon": "ride-mk-pirates-of-the-caribbean"
+  },
+  {
+    "park": "Magic Kingdom",
+    "label": "Peter Pan's Flight",
+    "aliases": [],
+    "icon": "ride-mk-peter-pan-s-flight"
+  },
+  {
+    "park": "Magic Kingdom",
+    "label": "it's a small world",
+    "aliases": [
+      "its a small world"
+    ],
+    "icon": "ride-mk-it-s-a-small-world"
+  },
+  {
+    "park": "Magic Kingdom",
+    "label": "Mad Tea Party",
+    "aliases": [],
+    "icon": "ride-mk-mad-tea-party"
+  },
+  {
+    "park": "Magic Kingdom",
+    "label": "Dumbo the Flying Elephant",
+    "aliases": [
+      "Dumbo"
+    ],
+    "icon": "ride-mk-dumbo-the-flying-elephant"
+  },
+  {
+    "park": "Magic Kingdom",
+    "label": "Buzz Lightyear's Space Ranger Spin",
+    "aliases": [
+      "Buzz Lightyear Space Ranger Spin"
+    ],
+    "icon": "ride-mk-buzz-lightyear-s-space-ranger-spin"
+  },
+  {
+    "park": "Magic Kingdom",
+    "label": "Seven Dwarfs Mine Train",
+    "aliases": [],
+    "icon": "ride-mk-seven-dwarfs-mine-train"
+  },
+  {
+    "park": "EPCOT",
+    "label": "Spaceship Earth",
+    "aliases": [],
+    "icon": "sphere"
+  },
+  {
+    "park": "EPCOT",
+    "label": "Test Track",
+    "aliases": [],
+    "icon": "ride-epcot-test-track"
+  },
+  {
+    "park": "EPCOT",
+    "label": "Frozen Ever After",
+    "aliases": [],
+    "icon": "ride-epcot-frozen-ever-after"
+  },
+  {
+    "park": "EPCOT",
+    "label": "Remy's Ratatouille Adventure",
+    "aliases": [
+      "Ratatouille Adventure"
+    ],
+    "icon": "ride-epcot-remy-s-ratatouille-adventure"
+  },
+  {
+    "park": "EPCOT",
+    "label": "Soarin' Around the World",
+    "aliases": [
+      "Soarin",
+      "Soarin Around the World"
+    ],
+    "icon": "ride-epcot-soarin-around-the-world"
+  },
+  {
+    "park": "EPCOT",
+    "label": "Living with the Land",
+    "aliases": [],
+    "icon": "ride-epcot-living-with-the-land"
+  },
+  {
+    "park": "Hollywood Studios",
+    "label": "Millennium Falcon: Smugglers Run",
+    "aliases": [
+      "Millennium Falcon Smugglers Run",
+      "Smugglers Run"
+    ],
+    "icon": "ride-hs-millennium-falcon-smugglers-run"
+  },
+  {
+    "park": "Hollywood Studios",
+    "label": "Slinky Dog Dash",
+    "aliases": [],
+    "icon": "ride-hs-slinky-dog-dash"
+  },
+  {
+    "park": "Hollywood Studios",
+    "label": "Rock 'n' Roller Coaster",
+    "aliases": [
+      "Rock n Roller Coaster Starring Aerosmith"
+    ],
+    "icon": "ride-hs-rock-n-roller-coaster"
+  },
+  {
+    "park": "Hollywood Studios",
+    "label": "Mickey & Minnie's Runaway Railway",
+    "aliases": [
+      "Mickey and Minnies Runaway Railway"
+    ],
+    "icon": "ride-hs-mickey-minnie-s-runaway-railway"
+  },
+  {
+    "park": "Hollywood Studios",
+    "label": "Tower of Terror",
+    "aliases": [
+      "The Twilight Zone Tower of Terror",
+      "The Twilight Zone Tower of Terror!"
+    ],
+    "icon": "tower"
+  },
+  {
+    "park": "Animal Kingdom",
+    "label": "Expedition Everest",
+    "aliases": [
+      "Expedition Everest Legend of the Forbidden Mountain"
+    ],
+    "icon": "ride-ak-expedition-everest"
+  },
+  {
+    "park": "Animal Kingdom",
+    "label": "Kilimanjaro Safaris",
+    "aliases": [],
+    "icon": "ride-ak-kilimanjaro-safaris"
+  },
+  {
+    "park": "Animal Kingdom",
+    "label": "Avatar Flight of Passage",
+    "aliases": [
+      "Flight of Passage"
+    ],
+    "icon": "ride-ak-avatar-flight-of-passage"
+  },
+  {
+    "park": "California Adventure",
+    "label": "Radiator Springs Racers",
+    "aliases": [],
+    "icon": "ride-dca-radiator-springs-racers"
+  },
+  {
+    "park": "California Adventure",
+    "label": "Incredicoaster",
+    "aliases": [
+      "The Incredicoaster"
+    ],
+    "icon": "ride-dca-incredicoaster"
+  },
+  {
+    "park": "California Adventure",
+    "label": "Guardians of the Galaxy – Mission: BREAKOUT!",
+    "aliases": [
+      "Guardians of the Galaxy Mission Breakout",
+      "Mission Breakout"
+    ],
+    "icon": "ride-dca-guardians-of-the-galaxy-mission-breakout"
+  },
+  {
+    "park": "California Adventure",
+    "label": "Toy Story Midway Mania!",
+    "aliases": [
+      "Toy Story Mania",
+      "Toy Story Midway Mania"
+    ],
+    "icon": "ride-dca-toy-story-midway-mania"
+  },
+  {
+    "park": "California Adventure",
+    "label": "Soarin' Around the World",
+    "aliases": [
+      "Soarin",
+      "Soarin Around the World"
+    ],
+    "icon": "ride-dca-soarin-around-the-world"
+  },
+  {
+    "park": "California Adventure",
+    "label": "The Little Mermaid – Ariel’s Undersea Adventure",
+    "aliases": [
+      "The Little Mermaid Ariels Undersea Adventure",
+      "Ariels Undersea Adventure"
+    ],
+    "icon": "ride-dca-the-little-mermaid-ariels-undersea-adventure"
+  },
+  {
+    "park": "Disneyland",
+    "label": "Space Mountain",
+    "aliases": [],
+    "icon": "ride-dl-space-mountain"
+  },
+  {
+    "park": "Disneyland",
+    "label": "Big Thunder Mountain Railroad",
+    "aliases": [
+      "Big Thunder Mountain"
+    ],
+    "icon": "ride-dl-big-thunder-mountain-railroad"
+  },
+  {
+    "park": "Disneyland",
+    "label": "Haunted Mansion",
+    "aliases": [
+      "The Haunted Mansion"
+    ],
+    "icon": "ride-dl-haunted-mansion"
+  },
+  {
+    "park": "Disneyland",
+    "label": "it's a small world",
+    "aliases": [
+      "its a small world"
+    ],
+    "icon": "ride-dl-it-s-a-small-world"
+  }
+]

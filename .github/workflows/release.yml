@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.version }}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build release app bundle
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_FEED_URL: https://github.com/${{ github.repository }}/releases/latest/download/appcast.xml
+        run: |
+          chmod +x scripts/build_app.sh
+          ./scripts/build_app.sh
+          codesign --verify --strict dist/MeuralSync.app
+
+      - name: Package zip & generate Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+        run: |
+          mkdir -p release_assets
+          ZIP_NAME="MeuralSync-${{ steps.version.outputs.tag }}.zip"
+          ditto -c -k --keepParent dist/MeuralSync.app "release_assets/${ZIP_NAME}"
+
+          if [ -n "$SPARKLE_PRIVATE_ED_KEY" ]; then
+            GENERATE_APPCAST=$(find .build/artifacts -name "generate_appcast" -type f | head -n 1)
+            if [ -z "$GENERATE_APPCAST" ]; then
+              echo "generate_appcast not found in .build/artifacts; downloading Sparkle tools..."
+              SPARKLE_VER=$(python3 -c 'import json; p=json.load(open("Package.resolved")); print([x["state"]["version"] for x in p["pins"] if x["identity"].lower()=="sparkle"][0])')
+              curl -sL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VER}/Sparkle-${SPARKLE_VER}.tar.xz" -o /tmp/sparkle.tar.xz
+              mkdir -p /tmp/sparkle-tools
+              tar -xf /tmp/sparkle.tar.xz -C /tmp/sparkle-tools
+              GENERATE_APPCAST="/tmp/sparkle-tools/bin/generate_appcast"
+            fi
+            echo "$SPARKLE_PRIVATE_ED_KEY" | "$GENERATE_APPCAST" \
+              --ed-key-file - \
+              --download-url-prefix "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/" \
+              release_assets
+          else
+            echo "SPARKLE_PRIVATE_ED_KEY secret not set; skipping appcast.xml generation."
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          gh release create "$TAG" release_assets/* \
+            --title "MeuralSync $TAG" \
+            --generate-notes
