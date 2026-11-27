@@ -6,6 +6,12 @@ import SwiftUI
 struct MeuralSyncApp: App {
     @State private var appState = AppState()
 
+    init() {
+        MainActor.assumeIsolated {
+            DockVisibilityManager.shared.startObserving()
+        }
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuBarView(appState: appState)
@@ -29,6 +35,74 @@ struct MeuralSyncApp: App {
 
         Settings {
             SettingsView(appState: appState)
+        }
+    }
+}
+
+/// Shows the app in the Dock (`.regular`) whenever any standard app window
+/// (Galleries, Logs, Settings) is open, and returns to menu-bar-only (`.accessory`)
+/// once all app windows are closed.
+@MainActor
+final class DockVisibilityManager {
+    static let shared = DockVisibilityManager()
+
+    private var observers: [NSObjectProtocol] = []
+
+    private init() {}
+
+    func startObserving() {
+        guard observers.isEmpty else { return }
+        let center = NotificationCenter.default
+
+        observers.append(
+            center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] note in
+                let window = note.object as? NSWindow
+                MainActor.assumeIsolated {
+                    guard let self, let window, self.isStandardAppWindow(window) else { return }
+                    self.setPolicy(.regular)
+                }
+            }
+        )
+
+        observers.append(
+            center.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] note in
+                let closingWindow = note.object as? NSWindow
+                MainActor.assumeIsolated {
+                    guard let self, let closingWindow, self.isStandardAppWindow(closingWindow) else { return }
+                    Task { @MainActor [weak self, weak closingWindow] in
+                        self?.syncPolicy(excluding: closingWindow)
+                    }
+                }
+            }
+        )
+    }
+
+    func showInDockAndActivate() {
+        setPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        Task { @MainActor in
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func isStandardAppWindow(_ window: NSWindow) -> Bool {
+        !(window is NSPanel)
+            && window.canBecomeMain
+            && window.styleMask.contains(.titled)
+    }
+
+    private func syncPolicy(excluding closingWindow: NSWindow? = nil) {
+        let hasOpenWindow = NSApp.windows.contains { window in
+            window !== closingWindow
+                && isStandardAppWindow(window)
+                && (window.isVisible || window.isMiniaturized)
+        }
+        setPolicy(hasOpenWindow ? .regular : .accessory)
+    }
+
+    private func setPolicy(_ policy: NSApplication.ActivationPolicy) {
+        if NSApp.activationPolicy() != policy {
+            NSApp.setActivationPolicy(policy)
         }
     }
 }

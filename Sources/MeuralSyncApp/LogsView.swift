@@ -3,6 +3,7 @@ import SwiftUI
 
 struct LogsView: View {
     @Bindable var appState: AppState
+    @State private var followLogs = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -10,6 +11,12 @@ struct LogsView: View {
                 Text("Sync Logs")
                     .font(.headline)
                 Spacer()
+                Toggle(isOn: $followLogs) {
+                    Label("Follow", systemImage: "arrow.down.to.line")
+                }
+                .toggleStyle(.button)
+                .help("Automatically scroll to new log entries")
+
                 Button("Copy All") {
                     let text = appState.logs
                         .map { "[\($0.timestamp.formatted(date: .omitted, time: .standard))] \($0.message)" }
@@ -44,8 +51,18 @@ struct LogsView: View {
                         }
                         .id(entry.id)
                     }
+                    .onAppear {
+                        if followLogs, let lastID = appState.logs.last?.id {
+                            proxy.scrollTo(lastID, anchor: .bottom)
+                        }
+                    }
                     .onChange(of: appState.logs.last?.id) { _, lastID in
-                        if let lastID {
+                        if followLogs, let lastID {
+                            proxy.scrollTo(lastID, anchor: .bottom)
+                        }
+                    }
+                    .onChange(of: followLogs) { _, isFollowing in
+                        if isFollowing, let lastID = appState.logs.last?.id {
                             proxy.scrollTo(lastID, anchor: .bottom)
                         }
                     }

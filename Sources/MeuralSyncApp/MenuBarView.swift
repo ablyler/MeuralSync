@@ -91,8 +91,8 @@ struct MenuBarView: View {
                         .font(.caption)
                     Spacer()
                     Button("Configure") {
+                        DockVisibilityManager.shared.showInDockAndActivate()
                         openSettings()
-                        NSApp.activate()
                     }
                     .controlSize(.small)
                 }
@@ -157,18 +157,18 @@ struct MenuBarView: View {
                 Spacer()
 
                 Button("Albums") {
+                    DockVisibilityManager.shared.showInDockAndActivate()
                     openWindow(id: "galleries")
-                    NSApp.activate()
                 }
 
                 Button("Logs") {
+                    DockVisibilityManager.shared.showInDockAndActivate()
                     openWindow(id: "logs")
-                    NSApp.activate()
                 }
 
                 Button("Settings…") {
+                    DockVisibilityManager.shared.showInDockAndActivate()
                     openSettings()
-                    NSApp.activate()
                 }
             }
 
