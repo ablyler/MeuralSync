@@ -36,92 +36,102 @@ public protocol CredentialStoring: Sendable {
     func clearCachedToken(for instanceName: String)
 }
 
-/// Secure credential storage using macOS Keychain (`Security.framework`).
-public struct KeychainCredentialStore: CredentialStoring {
-    public let serviceName: String
+/// Low-level Keychain operations, abstracted so unit tests can verify caching,
+/// consolidation, migration, and prompt-free existence checks without touching
+/// the user's real macOS Login Keychain.
+public protocol KeychainBackend: Sendable {
+    func readData(service: String, account: String) -> KeychainReadResult
+    func readCommentAttribute(service: String, account: String) -> String?
+    func itemExists(service: String, account: String) -> Bool
+    func saveData(_ data: Data, comment: String?, service: String, account: String) throws
+    func deleteItem(service: String, account: String)
+}
 
-    public init(serviceName: String = "com.ablyler.MeuralSync") {
-        self.serviceName = serviceName
-    }
+public enum KeychainReadResult: Sendable, Equatable {
+    case found(Data)
+    case notFound
+    case error(OSStatus)
+}
 
-    public func getCredentials(for instanceName: String) throws -> MeuralCredentials {
-        guard let email = readPassword(account: "\(instanceName)_email"),
-              let password = readPassword(account: "\(instanceName)_password"),
-              !email.isEmpty, !password.isEmpty
-        else {
-            throw CredentialError.missingCredentials(instanceName: instanceName)
-        }
-        return MeuralCredentials(email: email, password: password)
-    }
+public struct SystemKeychainBackend: KeychainBackend {
+    public init() {}
 
-    public func setCredentials(_ credentials: MeuralCredentials, for instanceName: String) throws {
-        try savePassword(credentials.email, account: "\(instanceName)_email")
-        try savePassword(credentials.password, account: "\(instanceName)_password")
-        clearCachedToken(for: instanceName)
-    }
-
-    public func hasCredentials(for instanceName: String) -> Bool {
-        guard let email = readPassword(account: "\(instanceName)_email"),
-              let password = readPassword(account: "\(instanceName)_password")
-        else {
-            return false
-        }
-        return !email.isEmpty && !password.isEmpty
-    }
-
-    public func deleteCredentials(for instanceName: String) throws {
-        deletePassword(account: "\(instanceName)_email")
-        deletePassword(account: "\(instanceName)_password")
-        deletePassword(account: "\(instanceName)_token")
-    }
-
-    public func getCachedToken(for instanceName: String) -> String? {
-        readPassword(account: "\(instanceName)_token")
-    }
-
-    public func setCachedToken(_ token: String, for instanceName: String) throws {
-        try savePassword(token, account: "\(instanceName)_token")
-    }
-
-    public func clearCachedToken(for instanceName: String) {
-        deletePassword(account: "\(instanceName)_token")
-    }
-
-    // MARK: - SecItem Helpers
-
-    private func readPassword(account: String) -> String? {
+    public func readData(service: String, account: String) -> KeychainReadResult {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else {
-            return nil
+        if status == errSecSuccess, let data = result as? Data {
+            return .found(data)
         }
-        return String(data: data, encoding: .utf8)
+        if status == errSecItemNotFound {
+            return .notFound
+        }
+        return .error(status)
     }
 
-    private func savePassword(_ value: String, account: String) throws {
-        let encoded = Data(value.utf8)
+    /// Reads only item metadata (`kSecReturnAttributes` without `kSecReturnData`),
+    /// which does NOT trigger a macOS Keychain authorization prompt.
+    public func readCommentAttribute(service: String, account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let attrs = result as? [String: Any],
+              let comment = attrs[kSecAttrComment as String] as? String
+        else {
+            return nil
+        }
+        return comment
+    }
+
+    /// Checks item existence using `kSecReturnAttributes` (without `kSecReturnData`),
+    /// avoiding macOS Keychain password prompts.
+    public func itemExists(service: String, account: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        return SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess
+    }
+
+    public func saveData(_ data: Data, comment: String?, service: String, account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        let attributes: [String: Any] = [
-            kSecValueData as String: encoded,
+        var attributes: [String: Any] = [
+            kSecValueData as String: data,
         ]
+        if let comment {
+            attributes[kSecAttrComment as String] = comment
+        }
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecSuccess {
             return
         }
         if updateStatus == errSecItemNotFound {
             var addQuery = query
-            addQuery[kSecValueData as String] = encoded
+            addQuery[kSecValueData as String] = data
+            if let comment {
+                addQuery[kSecAttrComment as String] = comment
+            }
             let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
             guard addStatus == errSecSuccess else {
                 throw CredentialError.keychainFailure(status: addStatus)
@@ -131,12 +141,256 @@ public struct KeychainCredentialStore: CredentialStoring {
         throw CredentialError.keychainFailure(status: updateStatus)
     }
 
-    private func deletePassword(account: String) {
+    public func deleteItem(service: String, account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
         SecItemDelete(query as CFDictionary)
+    }
+}
+
+private struct StoredAccount: Codable, Sendable, Equatable {
+    var email: String
+    var password: String
+    var token: String?
+
+    var hasValidCredentials: Bool {
+        !email.isEmpty && !password.isEmpty
+    }
+}
+
+private final class VaultCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var vaults: [String: [String: StoredAccount]] = [:]
+
+    func get(service: String) -> [String: StoredAccount]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return vaults[service]
+    }
+
+    func set(_ vault: [String: StoredAccount], service: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        vaults[service] = vault
+    }
+
+    func clear(service: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        vaults.removeValue(forKey: service)
+    }
+}
+
+/// Secure credential storage using macOS Keychain (`Security.framework`).
+///
+/// Consolidates all instances' credentials and cached tokens into a single Keychain
+/// item (`meural_credentials_v1`) with an in-memory cache and prompt-free existence
+/// checks (`kSecReturnAttributes`), dramatically reducing macOS Keychain prompts.
+/// Automatically migrates legacy per-field (`_email`, `_password`, `_token`) items.
+public struct KeychainCredentialStore: CredentialStoring {
+    public static let vaultAccountName = "meural_credentials_v1"
+    private static let sharedCache = VaultCache()
+
+    public let serviceName: String
+    private let backend: any KeychainBackend
+    private let cache: VaultCache
+
+    public init(serviceName: String = "com.ablyler.MeuralSync") {
+        self.serviceName = serviceName
+        self.backend = SystemKeychainBackend()
+        self.cache = Self.sharedCache
+    }
+
+    /// Initializer for unit testing with an isolated cache and mock Keychain backend.
+    public init(serviceName: String, backend: any KeychainBackend) {
+        self.serviceName = serviceName
+        self.backend = backend
+        self.cache = VaultCache()
+    }
+
+    public func getCredentials(for instanceName: String) throws -> MeuralCredentials {
+        var vault = try loadVault()
+        if let account = vault[instanceName], account.hasValidCredentials {
+            return MeuralCredentials(email: account.email, password: account.password)
+        }
+        if let migrated = try migrateLegacyAccountIfPresent(instanceName, into: &vault),
+           migrated.hasValidCredentials
+        {
+            return MeuralCredentials(email: migrated.email, password: migrated.password)
+        }
+        throw CredentialError.missingCredentials(instanceName: instanceName)
+    }
+
+    public func setCredentials(_ credentials: MeuralCredentials, for instanceName: String) throws {
+        var vault = try loadVault()
+        vault[instanceName] = StoredAccount(
+            email: credentials.email,
+            password: credentials.password,
+            token: nil
+        )
+        try saveVault(vault)
+        deleteLegacyItems(for: instanceName)
+    }
+
+    /// Checks whether credentials exist for `instanceName` without triggering a
+    /// macOS Keychain authorization prompt: uses the in-memory cache if loaded,
+    /// otherwise inspects only Keychain item attributes (`kSecReturnAttributes`).
+    public func hasCredentials(for instanceName: String) -> Bool {
+        if let cached = cache.get(service: serviceName) {
+            if let account = cached[instanceName], account.hasValidCredentials {
+                return true
+            }
+            // Fall through to prompt-free legacy check in case this instance
+            // hasn't been migrated into the consolidated vault yet.
+            return hasLegacyItems(for: instanceName)
+        }
+
+        if let comment = backend.readCommentAttribute(service: serviceName, account: Self.vaultAccountName),
+           let keys = Self.decodeConfiguredKeys(comment),
+           keys.contains(instanceName)
+        {
+            return true
+        }
+
+        return hasLegacyItems(for: instanceName)
+    }
+
+    public func deleteCredentials(for instanceName: String) throws {
+        if var vault = try? loadVault(), vault.removeValue(forKey: instanceName) != nil {
+            try saveVault(vault)
+        }
+        deleteLegacyItems(for: instanceName)
+    }
+
+    public func getCachedToken(for instanceName: String) -> String? {
+        guard var vault = try? loadVault() else {
+            return nil
+        }
+        if let account = vault[instanceName] {
+            return account.token
+        }
+        if let migrated = try? migrateLegacyAccountIfPresent(instanceName, into: &vault) {
+            return migrated.token
+        }
+        return nil
+    }
+
+    public func setCachedToken(_ token: String, for instanceName: String) throws {
+        var vault = try loadVault()
+        if var existing = vault[instanceName] {
+            existing.token = token
+            vault[instanceName] = existing
+        } else {
+            vault[instanceName] = StoredAccount(email: "", password: "", token: token)
+        }
+        try saveVault(vault)
+    }
+
+    public func clearCachedToken(for instanceName: String) {
+        guard var vault = try? loadVault(), var existing = vault[instanceName] else {
+            backend.deleteItem(service: serviceName, account: "\(instanceName)_token")
+            return
+        }
+        if existing.token != nil {
+            existing.token = nil
+            vault[instanceName] = existing
+            try? saveVault(vault)
+        }
+        backend.deleteItem(service: serviceName, account: "\(instanceName)_token")
+    }
+
+    // MARK: - Vault Persistence & Migration
+
+    private func loadVault() throws -> [String: StoredAccount] {
+        if let cached = cache.get(service: serviceName) {
+            return cached
+        }
+        switch backend.readData(service: serviceName, account: Self.vaultAccountName) {
+        case .found(let data):
+            let decoded = (try? JSONDecoder().decode([String: StoredAccount].self, from: data)) ?? [:]
+            cache.set(decoded, service: serviceName)
+            return decoded
+        case .notFound:
+            cache.set([:], service: serviceName)
+            return [:]
+        case .error(let status):
+            throw CredentialError.keychainFailure(status: status)
+        }
+    }
+
+    private func saveVault(_ vault: [String: StoredAccount]) throws {
+        let encoded = try JSONEncoder().encode(vault)
+        let configuredKeys = vault
+            .filter { $0.value.hasValidCredentials }
+            .map(\.key)
+            .sorted()
+        let comment = Self.encodeConfiguredKeys(configuredKeys)
+        try backend.saveData(encoded, comment: comment, service: serviceName, account: Self.vaultAccountName)
+        cache.set(vault, service: serviceName)
+    }
+
+    private func hasLegacyItems(for instanceName: String) -> Bool {
+        backend.itemExists(service: serviceName, account: "\(instanceName)_email")
+            && backend.itemExists(service: serviceName, account: "\(instanceName)_password")
+    }
+
+    private func migrateLegacyAccountIfPresent(
+        _ instanceName: String,
+        into vault: inout [String: StoredAccount]
+    ) throws -> StoredAccount? {
+        guard hasLegacyItems(for: instanceName) else {
+            return nil
+        }
+        guard let email = readLegacyString(account: "\(instanceName)_email"),
+              let password = readLegacyString(account: "\(instanceName)_password"),
+              !email.isEmpty, !password.isEmpty
+        else {
+            return nil
+        }
+        let token: String?
+        if backend.itemExists(service: serviceName, account: "\(instanceName)_token") {
+            token = readLegacyString(account: "\(instanceName)_token")
+        } else {
+            token = nil
+        }
+        let account = StoredAccount(email: email, password: password, token: token)
+        vault[instanceName] = account
+        try saveVault(vault)
+        deleteLegacyItems(for: instanceName)
+        return account
+    }
+
+    private func readLegacyString(account: String) -> String? {
+        guard case .found(let data) = backend.readData(service: serviceName, account: account) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func deleteLegacyItems(for instanceName: String) {
+        backend.deleteItem(service: serviceName, account: "\(instanceName)_email")
+        backend.deleteItem(service: serviceName, account: "\(instanceName)_password")
+        backend.deleteItem(service: serviceName, account: "\(instanceName)_token")
+    }
+
+    private static func encodeConfiguredKeys(_ keys: [String]) -> String {
+        guard let data = try? JSONEncoder().encode(keys),
+              let json = String(data: data, encoding: .utf8)
+        else {
+            return "[]"
+        }
+        return json
+    }
+
+    private static func decodeConfiguredKeys(_ comment: String) -> Set<String>? {
+        guard let data = comment.data(using: .utf8),
+              let keys = try? JSONDecoder().decode([String].self, from: data)
+        else {
+            return nil
+        }
+        return Set(keys)
     }
 }
