@@ -685,4 +685,142 @@ struct CoreIntegrationTests {
         #expect(decoded.hour == 8)
         #expect(decoded.minute == 30)
     }
+
+    @Test("SyncEngine records failed device pushes in SyncStateStore and clears them on success")
+    func failedDevicePushTrackingAndClearing() async throws {
+        // 1. Verify FileSyncStateStore backward-compatible decode + persistence of PendingDevicePush
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MeuralSyncStateTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let stateURL = tempDir.appendingPathComponent("sync_state.json")
+        let legacyStateJSON = Data(#"{"galleryIDsByInstance":{"inst-1":[42]},"itemIDsByInstance":{"inst-1":[100]}}"#.utf8)
+        try legacyStateJSON.write(to: stateURL)
+
+        let fileStore = FileSyncStateStore(fileURL: stateURL)
+        #expect(fileStore.trackedGalleryIDs(for: "inst-1") == [42])
+        #expect(fileStore.pendingDevicePush(for: "inst-1") == nil)
+
+        let samplePush = PendingDevicePush(galleryID: 99, galleryName: "Test Album", errorMessage: "Canvas is offline")
+        fileStore.setPendingDevicePush(samplePush, for: "inst-1")
+
+        let reloaded = FileSyncStateStore(fileURL: stateURL)
+        #expect(reloaded.pendingDevicePush(for: "inst-1")?.galleryID == 99)
+        #expect(reloaded.pendingDevicePush(for: "inst-1")?.errorMessage == "Canvas is offline")
+
+        reloaded.setPendingDevicePush(nil, for: "inst-1")
+        #expect(FileSyncStateStore(fileURL: stateURL).pendingDevicePush(for: "inst-1") == nil)
+
+        // 2. Verify SyncEngine records failure when device push fails, then clears when subsequent push succeeds
+        struct SinglePhotoLibrary: PhotoLibraryProviding {
+            let photos: [PhotoMetadata]
+            func fetchAllPersonNames() async throws -> [String] { [] }
+            func queryPhotos(options: PhotosQueryOptions) async throws -> [PhotoMetadata] { photos }
+            func enrichLocations(for photos: [PhotoMetadata]) async -> [PhotoMetadata] { photos }
+        }
+        struct SinglePhotoExporter: PhotoExporting {
+            func exportPhoto(_ photo: PhotoMetadata, toDirectory directory: URL) async throws -> URL {
+                let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+                let ctx = CGContext(
+                    data: nil,
+                    width: photo.width,
+                    height: photo.height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: photo.width * 4,
+                    space: cs,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+                )!
+                ctx.setFillColor(CGColor(srgbRed: 0.3, green: 0.5, blue: 0.7, alpha: 1))
+                ctx.fill(CGRect(x: 0, y: 0, width: photo.width, height: photo.height))
+                let outURL = directory.appendingPathComponent("\(photo.uuid).jpg")
+                try ImageProcessor.saveJPEG(ctx.makeImage()!, to: outURL)
+                return outURL
+            }
+        }
+
+        let credStore = InMemoryCredentialStore()
+        let instance = InstanceConfig(
+            name: "Grandparents Frame",
+            enabled: true,
+            sendToDevices: true,
+            photoCount: 1,
+            destinationAlbumName: "Family Sync",
+            randomizeGalleryName: false,
+            uploadIntervalSeconds: 0
+        )
+        try credStore.setCredentials(MeuralCredentials(email: "u@example.com", password: "pw"), for: instance.storageKey)
+
+        let stateStore = InMemorySyncStateStore()
+        var failDeviceControl = true
+        let transport = MockTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            let method = request.httpMethod ?? "GET"
+            if url.contains("cognito-idp") {
+                return (Data(#"{"AuthenticationResult":{"AccessToken":"tok"}}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/galleries") {
+                return (Data(#"{"data":[{"id":55,"name":"Family Sync","items":[]}]}"#.utf8), 200)
+            }
+            if method == "POST" && url.hasSuffix("/items") {
+                return (Data(#"{"data":{"id":701}}"#.utf8), 200)
+            }
+            if method == "POST" && url.contains("/galleries/55/items/701") {
+                return (Data(#"{}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/devices") {
+                // Already on device so sendGalleryToDevice sleep is skipped; switchDeviceToGallery is exercised directly.
+                return (Data(#"{"data":[{"id":38086,"alias":"Nana Frame","galleries":[55]}]}"#.utf8), 200)
+            }
+            if method == "POST" && url.contains("/devices/38086/control/") {
+                if failDeviceControl {
+                    return (Data(#"{"errors":"Canvas is offline"}"#.utf8), 400)
+                }
+                return (Data(#"{}"#.utf8), 200)
+            }
+            return (Data(#"{"data":[]}"#.utf8), 200)
+        }
+
+        let engine = SyncEngine()
+        let library = SinglePhotoLibrary(photos: [
+            PhotoMetadata(uuid: "P1", date: Date(), width: 1080, height: 1920, curationScore: 0.9),
+        ])
+        let exporter = SinglePhotoExporter()
+        let clientFactory: @Sendable (String, any CredentialStoring, @escaping @Sendable (String) -> Void) -> MeuralClient = { key, store, logHandler in
+            MeuralClient(
+                instanceName: key,
+                credentialStore: store,
+                transport: transport,
+                sleepHandler: { _ in },
+                logHandler: logHandler
+            )
+        }
+
+        // Run 1: device offline -> sync still succeeds, pending push is recorded
+        try await engine.runSync(
+            config: AppConfig(instances: [instance]),
+            credentialStore: credStore,
+            photoLibrary: library,
+            exporter: exporter,
+            stateStore: stateStore,
+            clientFactory: clientFactory
+        )
+        let recorded = stateStore.pendingDevicePush(for: instance.storageKey)
+        #expect(recorded?.galleryID == 55)
+        #expect(recorded?.galleryName == "Family Sync")
+        #expect(recorded?.errorMessage.contains("Nana Frame") == true)
+        #expect(recorded?.errorMessage.contains("Canvas is offline") == true)
+
+        // Run 2: device back online -> pending push is cleared
+        failDeviceControl = false
+        try await engine.runSync(
+            config: AppConfig(instances: [instance]),
+            credentialStore: credStore,
+            photoLibrary: library,
+            exporter: exporter,
+            stateStore: stateStore,
+            clientFactory: clientFactory
+        )
+        #expect(stateStore.pendingDevicePush(for: instance.storageKey) == nil)
+    }
 }

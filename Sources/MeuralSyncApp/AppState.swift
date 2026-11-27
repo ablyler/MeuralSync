@@ -33,6 +33,8 @@ final class AppState {
     var launchAtLoginEnabled = false
     var availablePeople: [String] = []
     private(set) var credentialsVersion = 0
+    private(set) var pendingPushVersion = 0
+    var retryingPushInstanceIDs: Set<String> = []
     let updater = UpdaterController()
 
     private let engine = SyncEngine()
@@ -65,6 +67,22 @@ final class AppState {
         return config.instances
             .filter(\.enabled)
             .contains { !$0.people.include.isEmpty || !$0.people.exclude.isEmpty }
+    }
+
+    struct PendingPushItem: Identifiable {
+        let instance: InstanceConfig
+        let push: PendingDevicePush
+        var id: String { instance.storageKey }
+    }
+
+    var pendingDevicePushes: [PendingPushItem] {
+        _ = pendingPushVersion
+        return config.instances.compactMap { instance in
+            guard let push = syncStateStore.pendingDevicePush(for: instance.storageKey) else {
+                return nil
+            }
+            return PendingPushItem(instance: instance, push: push)
+        }
     }
 
     var missingCredentialsInstanceNames: [String] {
@@ -327,10 +345,61 @@ final class AppState {
     func recordManualGalleryDeletion(_ galleryID: Int, deletedItemIDs: Set<Int>, for instance: InstanceConfig) {
         syncStateStore.removeGalleryID(galleryID, for: instance.storageKey)
         syncStateStore.removeItemIDs(deletedItemIDs, for: instance.storageKey)
+        if syncStateStore.pendingDevicePush(for: instance.storageKey)?.galleryID == galleryID {
+            syncStateStore.setPendingDevicePush(nil, for: instance.storageKey)
+            pendingPushVersion += 1
+        }
     }
 
     func recordManualItemDeletion(_ itemID: Int, for instance: InstanceConfig) {
         syncStateStore.removeItemIDs([itemID], for: instance.storageKey)
+    }
+
+    func recordFailedDevicePush(galleryID: Int, galleryName: String, errorMessage: String, for instance: InstanceConfig) {
+        syncStateStore.setPendingDevicePush(
+            PendingDevicePush(galleryID: galleryID, galleryName: galleryName, errorMessage: errorMessage),
+            for: instance.storageKey
+        )
+        pendingPushVersion += 1
+    }
+
+    func clearPendingDevicePush(for instance: InstanceConfig) {
+        syncStateStore.setPendingDevicePush(nil, for: instance.storageKey)
+        pendingPushVersion += 1
+    }
+
+    func retryDevicePush(for instance: InstanceConfig) {
+        let key = instance.storageKey
+        guard !isSyncing, !retryingPushInstanceIDs.contains(key) else { return }
+        guard let pending = syncStateStore.pendingDevicePush(for: key) else { return }
+
+        retryingPushInstanceIDs.insert(key)
+        appendLog("Retrying send of '\(pending.galleryName)' (id: \(pending.galleryID)) to \(instance.name) frame(s)...")
+
+        Task {
+            defer {
+                self.retryingPushInstanceIDs.remove(key)
+            }
+            do {
+                let client = self.makeMeuralClient(for: instance)
+                let count = try await client.pushGalleryToDevices(galleryID: pending.galleryID)
+                self.syncStateStore.setPendingDevicePush(nil, for: key)
+                self.pendingPushVersion += 1
+                let label = count == 1 ? "1 Meural frame" : "\(count) Meural frames"
+                self.appendLog("Successfully sent '\(pending.galleryName)' to \(label) for \(instance.name).")
+            } catch {
+                self.syncStateStore.setPendingDevicePush(
+                    PendingDevicePush(
+                        galleryID: pending.galleryID,
+                        galleryName: pending.galleryName,
+                        errorMessage: error.localizedDescription
+                    ),
+                    for: key
+                )
+                self.pendingPushVersion += 1
+                self.appendLog("Retry send to frame failed for \(instance.name): \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: - Sync & Scheduling
@@ -406,6 +475,7 @@ final class AppState {
                 self.lastError = error.localizedDescription
                 self.appendLog("Sync failed: \(error.localizedDescription)")
             }
+            self.pendingPushVersion += 1
             self.isSyncing = false
             self.currentProgress = nil
             self.syncTask = nil

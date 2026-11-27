@@ -430,17 +430,68 @@ public actor SyncEngine {
         // Push to devices if enabled
         if instance.sendToDevices {
             onProgress(SyncProgress(instanceName: instance.name, phase: "Sending gallery to Meural frames..."))
-            let devices = try await client.getDevices()
-            for device in devices {
-                let alreadyOnDevice = device.galleryIds?.contains(gallery.id) ?? false
-                if !alreadyOnDevice {
-                    log("Sending gallery \(gallery.id) to device \(device.id)")
-                    try? await client.sendGalleryToDevice(deviceID: device.id, galleryID: gallery.id)
-                    try await Task.sleep(nanoseconds: 10 * 1_000_000_000)
+            var pushFailures: [String] = []
+            do {
+                let devices = try await client.getDevices()
+                for device in devices {
+                    try Task.checkCancellation()
+                    let deviceLabel = device.alias?.isEmpty == false ? device.alias! : "Device \(device.id)"
+                    let alreadyOnDevice = device.galleryIds?.contains(gallery.id) ?? false
+                    var sendFailed = false
+                    if !alreadyOnDevice {
+                        log("Sending gallery \(gallery.id) to device \(device.id)")
+                        do {
+                            try await client.sendGalleryToDevice(deviceID: device.id, galleryID: gallery.id)
+                            try await Task.sleep(nanoseconds: 10 * 1_000_000_000)
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch let err as URLError where err.code == .cancelled {
+                            throw CancellationError()
+                        } catch {
+                            sendFailed = true
+                            let detail = "\(deviceLabel): \(error.localizedDescription)"
+                            pushFailures.append(detail)
+                            log("Warning: failed sending gallery \(gallery.id) to \(deviceLabel): \(error.localizedDescription)")
+                        }
+                    }
+                    if !sendFailed {
+                        log("Switching device \(device.id) to gallery \(gallery.id)")
+                        do {
+                            try await client.switchDeviceToGallery(deviceID: device.id, galleryID: gallery.id)
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch let err as URLError where err.code == .cancelled {
+                            throw CancellationError()
+                        } catch {
+                            let detail = "\(deviceLabel): \(error.localizedDescription)"
+                            pushFailures.append(detail)
+                            log("Warning: failed switching \(deviceLabel) to gallery \(gallery.id): \(error.localizedDescription)")
+                        }
+                    }
                 }
-                log("Switching device \(device.id) to gallery \(gallery.id)")
-                try? await client.switchDeviceToGallery(deviceID: device.id, galleryID: gallery.id)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let err as URLError where err.code == .cancelled {
+                throw CancellationError()
+            } catch {
+                pushFailures.append(error.localizedDescription)
+                log("Warning: failed loading devices to push gallery \(gallery.id): \(error.localizedDescription)")
             }
+
+            if pushFailures.isEmpty {
+                stateStore.setPendingDevicePush(nil, for: stateKey)
+            } else {
+                stateStore.setPendingDevicePush(
+                    PendingDevicePush(
+                        galleryID: gallery.id,
+                        galleryName: gallery.name,
+                        errorMessage: pushFailures.joined(separator: "; ")
+                    ),
+                    for: stateKey
+                )
+            }
+        } else {
+            stateStore.setPendingDevicePush(nil, for: stateKey)
         }
 
         // Clean up old galleries created by this instance (detach items first; account-wide deletion happens in orphan cleanup)

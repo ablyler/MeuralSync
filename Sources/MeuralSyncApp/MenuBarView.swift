@@ -100,6 +100,42 @@ struct MenuBarView: View {
                 .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             }
 
+            ForEach(appState.pendingDevicePushes) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Failed to send '\(item.push.galleryName)' to \(item.instance.name).")
+                            .font(.caption.bold())
+                        Text(item.push.errorMessage)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer(minLength: 4)
+                    if appState.retryingPushInstanceIDs.contains(item.id) {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Button("Retry") {
+                            appState.retryDevicePush(for: item.instance)
+                        }
+                        .controlSize(.small)
+                        .disabled(appState.isSyncing)
+                    }
+                    Button {
+                        appState.clearPendingDevicePush(for: item.instance)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss")
+                }
+                .padding(8)
+                .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            }
+
             if let progress = appState.currentProgress {
                 VStack(alignment: .leading, spacing: 4) {
                     if !progress.instanceName.isEmpty {

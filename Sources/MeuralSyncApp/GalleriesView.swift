@@ -501,10 +501,17 @@ struct GalleriesView: View {
             } else {
                 let label = count == 1 ? "1 Meural frame" : "\(count) Meural frames"
                 statusMessage = "Sent '\(gallery.name)' to \(label)."
+                appState.clearPendingDevicePush(for: instance)
                 appState.appendLog("Manually sent album '\(gallery.name)' (id: \(gallery.id)) to \(label).")
             }
         } catch {
             errorMessage = "Failed to send album to frame: \(error.localizedDescription)"
+            appState.recordFailedDevicePush(
+                galleryID: gallery.id,
+                galleryName: gallery.name,
+                errorMessage: error.localizedDescription,
+                for: instance
+            )
         }
     }
 

@@ -1,5 +1,21 @@
 import Foundation
 
+/// Records a failed attempt to push/switch a gallery onto one or more Meural frames
+/// so the menu bar can surface a one-click Retry action until it succeeds.
+public struct PendingDevicePush: Codable, Sendable, Equatable {
+    public let galleryID: Int
+    public let galleryName: String
+    public let errorMessage: String
+    public let failedAt: Date
+
+    public init(galleryID: Int, galleryName: String, errorMessage: String, failedAt: Date = Date()) {
+        self.galleryID = galleryID
+        self.galleryName = galleryName
+        self.errorMessage = errorMessage
+        self.failedAt = failedAt
+    }
+}
+
 /// Persists Meural gallery and item IDs created by MeuralSync so cleanup never deletes
 /// user-owned galleries or items that MeuralSync did not create.
 public protocol SyncStateStoring: Sendable {
@@ -10,11 +26,24 @@ public protocol SyncStateStoring: Sendable {
     func trackedItemIDs(for instanceKey: String) -> Set<Int>
     func recordItemID(_ id: Int, for instanceKey: String)
     func removeItemIDs(_ ids: Set<Int>, for instanceKey: String)
+
+    func pendingDevicePush(for instanceKey: String) -> PendingDevicePush?
+    func setPendingDevicePush(_ push: PendingDevicePush?, for instanceKey: String)
 }
 
 private struct PersistedSyncState: Codable {
     var galleryIDsByInstance: [String: [Int]] = [:]
     var itemIDsByInstance: [String: [Int]] = [:]
+    var pendingDevicePushByInstance: [String: PendingDevicePush] = [:]
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.galleryIDsByInstance = try container.decodeIfPresent([String: [Int]].self, forKey: .galleryIDsByInstance) ?? [:]
+        self.itemIDsByInstance = try container.decodeIfPresent([String: [Int]].self, forKey: .itemIDsByInstance) ?? [:]
+        self.pendingDevicePushByInstance = try container.decodeIfPresent([String: PendingDevicePush].self, forKey: .pendingDevicePushByInstance) ?? [:]
+    }
 }
 
 public final class FileSyncStateStore: SyncStateStoring, @unchecked Sendable {
@@ -95,6 +124,21 @@ public final class FileSyncStateStore: SyncStateStoring, @unchecked Sendable {
         }
     }
 
+    public func pendingDevicePush(for instanceKey: String) -> PendingDevicePush? {
+        lock.withLock {
+            state.pendingDevicePushByInstance[instanceKey]
+        }
+    }
+
+    public func setPendingDevicePush(_ push: PendingDevicePush?, for instanceKey: String) {
+        lock.withLock {
+            if state.pendingDevicePushByInstance[instanceKey] != push {
+                state.pendingDevicePushByInstance[instanceKey] = push
+                persistLocked()
+            }
+        }
+    }
+
     private func persistLocked() {
         do {
             try FileManager.default.createDirectory(
@@ -115,6 +159,7 @@ public final class InMemorySyncStateStore: SyncStateStoring, @unchecked Sendable
     private let lock = NSLock()
     private var galleryIDs: [String: Set<Int>] = [:]
     private var itemIDs: [String: Set<Int>] = [:]
+    private var pendingPushes: [String: PendingDevicePush] = [:]
 
     public init() {}
 
@@ -140,5 +185,13 @@ public final class InMemorySyncStateStore: SyncStateStoring, @unchecked Sendable
 
     public func removeItemIDs(_ ids: Set<Int>, for instanceKey: String) {
         lock.withLock { itemIDs[instanceKey, default: []].subtract(ids) }
+    }
+
+    public func pendingDevicePush(for instanceKey: String) -> PendingDevicePush? {
+        lock.withLock { pendingPushes[instanceKey] }
+    }
+
+    public func setPendingDevicePush(_ push: PendingDevicePush?, for instanceKey: String) {
+        lock.withLock { pendingPushes[instanceKey] = push }
     }
 }
