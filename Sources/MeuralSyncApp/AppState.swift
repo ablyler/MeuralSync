@@ -29,6 +29,7 @@ final class AppState {
     var logs: [LogEntry] = []
 
     var photoAuthStatus: PHAuthorizationStatus = .notDetermined
+    var isVerifyingPhotoAccess = false
     var hasFullDiskAccess = false
     var launchAtLoginEnabled = false
     var availablePeople: [String] = []
@@ -51,6 +52,8 @@ final class AppState {
 
     private static let lastScheduledRunKey = "MeuralSync.lastScheduledRunDate"
     private static let lastSyncDateKey = "MeuralSync.lastSyncDate"
+    private static let hadPhotoAccessKey = "MeuralSync.hadPhotoAccess"
+    private var hasAttemptedSilentPhotoReverify = false
 
     private var lastScheduledRunDate: Date? {
         didSet {
@@ -223,7 +226,32 @@ final class AppState {
     // MARK: - Permissions & Login Item
 
     func refreshPermissions() {
-        photoAuthStatus = PhotoKitLibrary.authorizationStatus()
+        let status = PhotoKitLibrary.authorizationStatus()
+        photoAuthStatus = status
+        if isPhotoAccessGranted {
+            UserDefaults.standard.set(true, forKey: Self.hadPhotoAccessKey)
+            isVerifyingPhotoAccess = false
+        } else if status == .notDetermined,
+                  !hasAttemptedSilentPhotoReverify,
+                  UserDefaults.standard.bool(forKey: Self.hadPhotoAccessKey) || lastSyncDate != nil
+        {
+            // After an app update, PhotoKit can transiently report `.notDetermined` until
+            // `requestAuthorization` re-checks TCC (which resolves silently when already granted).
+            hasAttemptedSilentPhotoReverify = true
+            isVerifyingPhotoAccess = true
+            Task { @MainActor [weak self] in
+                let resolved = await PhotoKitLibrary.requestAuthorization()
+                guard let self else { return }
+                self.photoAuthStatus = resolved
+                self.isVerifyingPhotoAccess = false
+                if self.isPhotoAccessGranted {
+                    UserDefaults.standard.set(true, forKey: Self.hadPhotoAccessKey)
+                    self.refreshPermissions()
+                }
+            }
+            return
+        }
+
         let library = photoLibrary
         let photoOK = isPhotoAccessGranted
         Task.detached(priority: .utility) {

@@ -25,7 +25,7 @@ struct MenuBarView: View {
                 }
             }
 
-            if !appState.isPhotoAccessGranted {
+            if !appState.isPhotoAccessGranted && !appState.isVerifyingPhotoAccess {
                 HStack(spacing: 8) {
                     Image(systemName: "photo.badge.exclamationmark")
                         .foregroundStyle(.orange)
