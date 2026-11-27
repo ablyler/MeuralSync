@@ -218,7 +218,7 @@ public actor SyncEngine {
         let instanceName = instance.name
         let stateKey = instance.storageKey
         let log: @Sendable (String) -> Void = { [logger] msg in
-            logger.info("\(msg, privacy: .public)")
+            logger.info("\(msg, privacy: .private)")
             onLog("[\(instanceName)] \(msg)")
         }
 
@@ -274,10 +274,15 @@ public actor SyncEngine {
         case .landscape:
             resolvedOrientation = .landscape
         case .auto:
-            let devices = (try? await client.getDevices()) ?? []
-            if let detected = devices.compactMap(\.parsedOrientation).first {
+            let devices = try await client.getDevices()
+            let detectedOrientations = devices.compactMap(\.parsedOrientation)
+            if let detected = detectedOrientations.first {
                 resolvedOrientation = detected
-                log("Detected Meural frame orientation: \(detected.displayName) (\(detected.canvasWidth)×\(detected.canvasHeight))")
+                if Set(detectedOrientations).count > 1 {
+                    log("Warning: multiple frames with mixed orientations detected; using \(detected.displayName) (\(detected.canvasWidth)×\(detected.canvasHeight)). Override in Settings if needed.")
+                } else {
+                    log("Detected Meural frame orientation: \(detected.displayName) (\(detected.canvasWidth)×\(detected.canvasHeight))")
+                }
             } else {
                 resolvedOrientation = .portrait
                 log("Frame orientation not reported by Meural; defaulting to Portrait (1080×1920)")
@@ -362,8 +367,9 @@ public actor SyncEngine {
                 case .fullsizeFile(let outURL, let captionSummary):
                     defer { try? FileManager.default.removeItem(at: outURL) }
                     log("Uploading \(resolvedOrientation.rawValue) \(photo.uuid): \(captionSummary)")
-                    let itemID = try await client.uploadItem(galleryID: gallery.id, fileURL: outURL)
+                    let itemID = try await client.createItem(fileURL: outURL)
                     stateStore.recordItemID(itemID, for: stateKey)
+                    try await client.attachItem(galleryID: gallery.id, itemID: itemID)
                     uploadedItemIDs.insert(itemID)
                     consecutiveFailures = 0
 
@@ -387,8 +393,9 @@ public actor SyncEngine {
                             try ImageProcessor.saveJPEG(combined, to: outURL)
                         }
                         log("Uploading combined \(pairKind)s \(first.uuid) + \(second.uuid)")
-                        let itemID = try await client.uploadItem(galleryID: gallery.id, fileURL: outURL)
+                        let itemID = try await client.createItem(fileURL: outURL)
                         stateStore.recordItemID(itemID, for: stateKey)
+                        try await client.attachItem(galleryID: gallery.id, itemID: itemID)
                         uploadedItemIDs.insert(itemID)
                         consecutiveFailures = 0
 
@@ -429,8 +436,9 @@ public actor SyncEngine {
                     try ImageProcessor.saveJPEG(filled, to: outURL)
                 }
                 log("Uploading remaining photo \(leftover.uuid)")
-                let itemID = try await client.uploadItem(galleryID: gallery.id, fileURL: outURL)
+                let itemID = try await client.createItem(fileURL: outURL)
                 stateStore.recordItemID(itemID, for: stateKey)
+                try await client.attachItem(galleryID: gallery.id, itemID: itemID)
                 uploadedItemIDs.insert(itemID)
             } catch is CancellationError {
                 throw CancellationError()
@@ -456,11 +464,16 @@ public actor SyncEngine {
         }
 
         // Push to devices if enabled
+        var devicePushIncomplete = false
         if instance.sendToDevices {
             onProgress(SyncProgress(instanceName: instance.name, phase: "Sending gallery to Meural frames..."))
             var pushFailures: [String] = []
             do {
                 let devices = try await client.getDevices()
+                if devices.isEmpty {
+                    pushFailures.append("No Meural frames found on account")
+                    log("Warning: no Meural frames found on account to push gallery \(gallery.id).")
+                }
                 for device in devices {
                     try Task.checkCancellation()
                     let deviceLabel = device.alias?.isEmpty == false ? device.alias! : "Device \(device.id)"
@@ -509,6 +522,7 @@ public actor SyncEngine {
             if pushFailures.isEmpty {
                 stateStore.setPendingDevicePush(nil, for: stateKey)
             } else {
+                devicePushIncomplete = true
                 stateStore.setPendingDevicePush(
                     PendingDevicePush(
                         galleryID: gallery.id,
@@ -522,29 +536,34 @@ public actor SyncEngine {
             stateStore.setPendingDevicePush(nil, for: stateKey)
         }
 
-        // Clean up old galleries created by this instance (detach items first; account-wide deletion happens in orphan cleanup)
+        // Clean up old galleries created by this instance — skip if pushing to frames failed
+        // so an offline or full frame never loses the fallback album it is still displaying.
         try Task.checkCancellation()
-        onProgress(SyncProgress(instanceName: instance.name, phase: "Cleaning up old galleries..."))
-        let trackedGalleries = stateStore.trackedGalleryIDs(for: stateKey)
-        let oldGalleryIDs = try await client.deletePhotosInOldGalleries(
-            currentGalleryID: gallery.id,
-            destinationAlbumName: instance.destinationAlbumName,
-            trackedGalleryIDs: trackedGalleries
-        )
-        for oldID in oldGalleryIDs {
-            try Task.checkCancellation()
-            log("Deleting old gallery \(oldID)")
-            do {
-                try await client.deleteGallery(id: oldID)
-                stateStore.removeGalleryID(oldID, for: stateKey)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let err as URLError where err.code == .cancelled {
-                throw CancellationError()
-            } catch let err as MeuralAPIError where err.statusCode == 404 {
-                stateStore.removeGalleryID(oldID, for: stateKey)
-            } catch {
-                log("Warning: failed deleting old gallery \(oldID); keeping tracked for retry: \(error.localizedDescription)")
+        if devicePushIncomplete {
+            log("Skipping old-gallery cleanup because pushing to frame(s) did not complete; previous albums preserved until next successful handoff.")
+        } else {
+            onProgress(SyncProgress(instanceName: instance.name, phase: "Cleaning up old galleries..."))
+            let trackedGalleries = stateStore.trackedGalleryIDs(for: stateKey)
+            let oldGalleryIDs = try await client.deletePhotosInOldGalleries(
+                currentGalleryID: gallery.id,
+                destinationAlbumName: instance.destinationAlbumName,
+                trackedGalleryIDs: trackedGalleries
+            )
+            for oldID in oldGalleryIDs {
+                try Task.checkCancellation()
+                log("Deleting old gallery \(oldID)")
+                do {
+                    try await client.deleteGallery(id: oldID)
+                    stateStore.removeGalleryID(oldID, for: stateKey)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let err as URLError where err.code == .cancelled {
+                    throw CancellationError()
+                } catch let err as MeuralAPIError where err.statusCode == 404 {
+                    stateStore.removeGalleryID(oldID, for: stateKey)
+                } catch {
+                    log("Warning: failed deleting old gallery \(oldID); keeping tracked for retry: \(error.localizedDescription)")
+                }
             }
         }
 

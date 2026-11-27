@@ -171,16 +171,10 @@ private final class VaultCache: @unchecked Sendable {
         return vaults[service]
     }
 
-    func set(_ vault: [String: StoredAccount], service: String) {
+    func withTransaction<T>(_ body: (inout [String: [String: StoredAccount]]) throws -> T) rethrows -> T {
         lock.lock()
         defer { lock.unlock() }
-        vaults[service] = vault
-    }
-
-    func clear(service: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        vaults.removeValue(forKey: service)
+        return try body(&vaults)
     }
 }
 
@@ -212,27 +206,31 @@ public struct KeychainCredentialStore: CredentialStoring {
     }
 
     public func getCredentials(for instanceName: String) throws -> MeuralCredentials {
-        var vault = try loadVault()
-        if let account = vault[instanceName], account.hasValidCredentials {
-            return MeuralCredentials(email: account.email, password: account.password)
+        try cache.withTransaction { vaults in
+            var vault = try loadVaultLocked(vaults: &vaults)
+            if let account = vault[instanceName], account.hasValidCredentials {
+                return MeuralCredentials(email: account.email, password: account.password)
+            }
+            if let migrated = try migrateLegacyAccountIfPresentLocked(instanceName, into: &vault, vaults: &vaults),
+               migrated.hasValidCredentials
+            {
+                return MeuralCredentials(email: migrated.email, password: migrated.password)
+            }
+            throw CredentialError.missingCredentials(instanceName: instanceName)
         }
-        if let migrated = try migrateLegacyAccountIfPresent(instanceName, into: &vault),
-           migrated.hasValidCredentials
-        {
-            return MeuralCredentials(email: migrated.email, password: migrated.password)
-        }
-        throw CredentialError.missingCredentials(instanceName: instanceName)
     }
 
     public func setCredentials(_ credentials: MeuralCredentials, for instanceName: String) throws {
-        var vault = try loadVault()
-        vault[instanceName] = StoredAccount(
-            email: credentials.email,
-            password: credentials.password,
-            token: nil
-        )
-        try saveVault(vault)
-        deleteLegacyItems(for: instanceName)
+        try cache.withTransaction { vaults in
+            var vault = try loadVaultLocked(vaults: &vaults)
+            vault[instanceName] = StoredAccount(
+                email: credentials.email,
+                password: credentials.password,
+                token: nil
+            )
+            try saveVaultLocked(vault, vaults: &vaults)
+            deleteLegacyItems(for: instanceName)
+        }
     }
 
     /// Checks whether credentials exist for `instanceName` without triggering a
@@ -259,69 +257,83 @@ public struct KeychainCredentialStore: CredentialStoring {
     }
 
     public func deleteCredentials(for instanceName: String) throws {
-        if var vault = try? loadVault(), vault.removeValue(forKey: instanceName) != nil {
-            try saveVault(vault)
+        try cache.withTransaction { vaults in
+            var vault = try loadVaultLocked(vaults: &vaults)
+            if vault.removeValue(forKey: instanceName) != nil {
+                try saveVaultLocked(vault, vaults: &vaults)
+            }
+            deleteLegacyItems(for: instanceName)
         }
-        deleteLegacyItems(for: instanceName)
     }
 
     public func getCachedToken(for instanceName: String) -> String? {
-        guard var vault = try? loadVault() else {
+        cache.withTransaction { vaults in
+            guard var vault = try? loadVaultLocked(vaults: &vaults) else {
+                return nil
+            }
+            if let account = vault[instanceName] {
+                return account.token
+            }
+            if let migrated = try? migrateLegacyAccountIfPresentLocked(instanceName, into: &vault, vaults: &vaults) {
+                return migrated.token
+            }
             return nil
         }
-        if let account = vault[instanceName] {
-            return account.token
-        }
-        if let migrated = try? migrateLegacyAccountIfPresent(instanceName, into: &vault) {
-            return migrated.token
-        }
-        return nil
     }
 
     public func setCachedToken(_ token: String, for instanceName: String) throws {
-        var vault = try loadVault()
-        if var existing = vault[instanceName] {
-            existing.token = token
-            vault[instanceName] = existing
-        } else {
-            vault[instanceName] = StoredAccount(email: "", password: "", token: token)
+        try cache.withTransaction { vaults in
+            var vault = try loadVaultLocked(vaults: &vaults)
+            if var existing = vault[instanceName] {
+                existing.token = token
+                vault[instanceName] = existing
+            } else {
+                vault[instanceName] = StoredAccount(email: "", password: "", token: token)
+            }
+            try saveVaultLocked(vault, vaults: &vaults)
         }
-        try saveVault(vault)
     }
 
     public func clearCachedToken(for instanceName: String) {
-        guard var vault = try? loadVault(), var existing = vault[instanceName] else {
+        cache.withTransaction { vaults in
+            guard var vault = try? loadVaultLocked(vaults: &vaults), var existing = vault[instanceName] else {
+                backend.deleteItem(service: serviceName, account: "\(instanceName)_token")
+                return
+            }
+            if existing.token != nil {
+                existing.token = nil
+                vault[instanceName] = existing
+                try? saveVaultLocked(vault, vaults: &vaults)
+            }
             backend.deleteItem(service: serviceName, account: "\(instanceName)_token")
-            return
         }
-        if existing.token != nil {
-            existing.token = nil
-            vault[instanceName] = existing
-            try? saveVault(vault)
-        }
-        backend.deleteItem(service: serviceName, account: "\(instanceName)_token")
     }
 
     // MARK: - Vault Persistence & Migration
 
-    private func loadVault() throws -> [String: StoredAccount] {
-        if let cached = cache.get(service: serviceName) {
+    private func loadVaultLocked(vaults: inout [String: [String: StoredAccount]]) throws -> [String: StoredAccount] {
+        if let cached = vaults[serviceName] {
             return cached
         }
         switch backend.readData(service: serviceName, account: Self.vaultAccountName) {
         case .found(let data):
-            let decoded = (try? JSONDecoder().decode([String: StoredAccount].self, from: data)) ?? [:]
-            cache.set(decoded, service: serviceName)
+            guard let decoded = try? JSONDecoder().decode([String: StoredAccount].self, from: data) else {
+                throw CredentialError.keychainFailure(status: errSecDecode)
+            }
+            vaults[serviceName] = decoded
             return decoded
         case .notFound:
-            cache.set([:], service: serviceName)
+            vaults[serviceName] = [:]
             return [:]
         case .error(let status):
             throw CredentialError.keychainFailure(status: status)
         }
     }
 
-    private func saveVault(_ vault: [String: StoredAccount]) throws {
+    private func saveVaultLocked(
+        _ vault: [String: StoredAccount],
+        vaults: inout [String: [String: StoredAccount]]
+    ) throws {
         let encoded = try JSONEncoder().encode(vault)
         let configuredKeys = vault
             .filter { $0.value.hasValidCredentials }
@@ -329,7 +341,7 @@ public struct KeychainCredentialStore: CredentialStoring {
             .sorted()
         let comment = Self.encodeConfiguredKeys(configuredKeys)
         try backend.saveData(encoded, comment: comment, service: serviceName, account: Self.vaultAccountName)
-        cache.set(vault, service: serviceName)
+        vaults[serviceName] = vault
     }
 
     private func hasLegacyItems(for instanceName: String) -> Bool {
@@ -337,9 +349,10 @@ public struct KeychainCredentialStore: CredentialStoring {
             && backend.itemExists(service: serviceName, account: "\(instanceName)_password")
     }
 
-    private func migrateLegacyAccountIfPresent(
+    private func migrateLegacyAccountIfPresentLocked(
         _ instanceName: String,
-        into vault: inout [String: StoredAccount]
+        into vault: inout [String: StoredAccount],
+        vaults: inout [String: [String: StoredAccount]]
     ) throws -> StoredAccount? {
         guard hasLegacyItems(for: instanceName) else {
             return nil
@@ -358,7 +371,7 @@ public struct KeychainCredentialStore: CredentialStoring {
         }
         let account = StoredAccount(email: email, password: password, token: token)
         vault[instanceName] = account
-        try saveVault(vault)
+        try saveVaultLocked(vault, vaults: &vaults)
         deleteLegacyItems(for: instanceName)
         return account
     }

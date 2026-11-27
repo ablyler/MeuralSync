@@ -39,7 +39,9 @@ struct GalleriesView: View {
 
     @State private var selectedInstanceID: UUID?
     @State private var galleries: [MeuralGallery] = []
+    @State private var accountGalleryIDs: Set<Int> = []
     @State private var deviceGalleryIDs: Set<Int> = []
+    @State private var deviceLookupError: String?
     @State private var detectedOrientation: CanvasOrientation?
     @State private var showAllAccountAlbums = false
     @State private var trackedGalleryIDs: Set<Int> = []
@@ -88,7 +90,7 @@ struct GalleriesView: View {
     }
 
     private var mutationsDisabled: Bool {
-        appState.isMutatingGalleries || appState.isSyncing
+        appState.isMutatingGalleries || appState.isSyncing || appState.isRetryingDevicePush
     }
 
     var body: some View {
@@ -315,7 +317,8 @@ struct GalleriesView: View {
                 } label: {
                     Label("Delete Album", systemImage: "trash")
                 }
-                .disabled(mutationsDisabled)
+                .disabled(mutationsDisabled || !accountGalleryIDs.contains(gallery.id))
+                .help(accountGalleryIDs.contains(gallery.id) ? "Delete this album" : "Only account-owned albums can be deleted")
             }
 
             Button {
@@ -342,7 +345,17 @@ struct GalleriesView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if displayedGalleries.isEmpty {
-                if !showAllAccountAlbums && !galleries.isEmpty {
+                if !showAllAccountAlbums, let deviceLookupError {
+                    ContentUnavailableView {
+                        Label("Could Not Check Frame", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(deviceLookupError)
+                    } actions: {
+                        Button("Show All Account Albums") {
+                            showAllAccountAlbums = true
+                        }
+                    }
+                } else if !showAllAccountAlbums && !galleries.isEmpty {
                     ContentUnavailableView {
                         Label("No Albums on Frame", systemImage: "tv")
                     } description: {
@@ -397,7 +410,7 @@ struct GalleriesView: View {
                             Button("Delete Album…", role: .destructive) {
                                 galleryPendingDelete = PendingGalleryDelete(instance: instance, gallery: gallery)
                             }
-                            .disabled(mutationsDisabled)
+                            .disabled(mutationsDisabled || !accountGalleryIDs.contains(gallery.id))
                         }
                     }
                 }
@@ -433,6 +446,7 @@ struct GalleriesView: View {
                         ForEach(items) { item in
                             PhotoGridCard(
                                 item: item,
+                                aspectRatio: detectedOrientation == .landscape ? (16.0 / 9.0) : (9.0 / 16.0),
                                 mutationsDisabled: mutationsDisabled,
                                 onPreview: {
                                     previewTarget = LightboxTarget(instance: instance, galleryID: galleryID, item: item)
@@ -456,7 +470,9 @@ struct GalleriesView: View {
         let generation = galleriesLoadGeneration
 
         galleries = []
+        accountGalleryIDs = []
         deviceGalleryIDs = []
+        deviceLookupError = nil
         detectedOrientation = nil
         items = []
         trackedGalleryIDs = []
@@ -478,11 +494,19 @@ struct GalleriesView: View {
 
         do {
             let client = appState.makeMeuralClient(for: instance)
-            async let fetchedGalleriesTask = client.getGalleries()
-            async let fetchedDevicesTask = client.getDevices()
-
-            let fetched = try await fetchedGalleriesTask
-            let devices = (try? await fetchedDevicesTask) ?? []
+            let fetched = try await client.getGalleries()
+            let devices: [MeuralDevice]
+            var lookupFailure: String?
+            do {
+                devices = try await client.getDevices()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let err as URLError where err.code == .cancelled {
+                throw CancellationError()
+            } catch {
+                devices = []
+                lookupFailure = "Failed to load frame info: \(error.localizedDescription)"
+            }
 
             var matchedIDs = Set<Int>()
             var extraGalleriesByID: [Int: MeuralGallery] = [:]
@@ -506,8 +530,10 @@ struct GalleriesView: View {
             for g in fetched {
                 mergedByID[g.id] = g
             }
+            accountGalleryIDs = Set(fetched.map(\.id))
             galleries = mergedByID.values.sorted { $0.id > $1.id }
             deviceGalleryIDs = matchedIDs
+            deviceLookupError = lookupFailure
             detectedOrientation = devices.compactMap(\.parsedOrientation).first
             selectedGalleryID = displayedGalleries.first?.id
         } catch is CancellationError {
@@ -615,9 +641,11 @@ struct GalleriesView: View {
                 appState.appendLog("Manually deleted album '\(pending.gallery.name)' (id: \(pending.gallery.id)).")
                 if selectedInstance?.id == pending.instance.id {
                     trackedGalleryIDs.remove(pending.gallery.id)
+                    accountGalleryIDs.remove(pending.gallery.id)
+                    deviceGalleryIDs.remove(pending.gallery.id)
                     galleries.removeAll { $0.id == pending.gallery.id }
                     if selectedGalleryID == pending.gallery.id {
-                        selectedGalleryID = galleries.first?.id
+                        selectedGalleryID = displayedGalleries.first?.id
                     }
                 }
                 if result.skippedOrphanCleanup {
@@ -674,6 +702,7 @@ struct GalleriesView: View {
 
 private struct PhotoGridCard: View {
     let item: MeuralItem
+    let aspectRatio: CGFloat
     let mutationsDisabled: Bool
     let onPreview: () -> Void
     let onDelete: () -> Void
@@ -685,7 +714,7 @@ private struct PhotoGridCard: View {
             ZStack(alignment: .topTrailing) {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color.black.opacity(0.85))
-                    .aspectRatio(9.0 / 16.0, contentMode: .fit)
+                    .aspectRatio(aspectRatio, contentMode: .fit)
                     .overlay {
                         if let url = item.thumbnailURL ?? item.imageURL {
                             AsyncImage(url: url) { phase in

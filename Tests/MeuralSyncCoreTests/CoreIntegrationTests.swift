@@ -752,7 +752,10 @@ struct CoreIntegrationTests {
         try credStore.setCredentials(MeuralCredentials(email: "u@example.com", password: "pw"), for: instance.storageKey)
 
         let stateStore = InMemorySyncStateStore()
+        // Pre-seed an old tracked gallery (id: 44) that must survive when frame push fails!
+        stateStore.recordGalleryID(44, for: instance.storageKey)
         var failDeviceControl = true
+        var deletedGalleryIDs: [Int] = []
         let transport = MockTransport { request in
             let url = request.url?.absoluteString ?? ""
             let method = request.httpMethod ?? "GET"
@@ -760,7 +763,14 @@ struct CoreIntegrationTests {
                 return (Data(#"{"AuthenticationResult":{"AccessToken":"tok"}}"#.utf8), 200)
             }
             if method == "GET" && url.contains("/user/galleries") {
-                return (Data(#"{"data":[{"id":55,"name":"Family Sync","items":[]}]}"#.utf8), 200)
+                return (Data(#"{"data":[{"id":44,"name":"Family Sync Old","items":[]},{"id":55,"name":"Family Sync","items":[]}]}"#.utf8), 200)
+            }
+            if method == "GET" && url.hasSuffix("/galleries/44") {
+                return (Data(#"{"data":{"id":44,"name":"Family Sync Old","items":[]}}"#.utf8), 200)
+            }
+            if method == "DELETE" && url.hasSuffix("/galleries/44") {
+                deletedGalleryIDs.append(44)
+                return (Data(#"{}"#.utf8), 200)
             }
             if method == "POST" && url.hasSuffix("/items") {
                 return (Data(#"{"data":{"id":701}}"#.utf8), 200)
@@ -796,7 +806,7 @@ struct CoreIntegrationTests {
             )
         }
 
-        // Run 1: device offline -> sync still succeeds, pending push is recorded
+        // Run 1: device offline -> sync still succeeds, pending push is recorded, AND old gallery 44 is preserved!
         try await engine.runSync(
             config: AppConfig(instances: [instance]),
             credentialStore: credStore,
@@ -810,8 +820,10 @@ struct CoreIntegrationTests {
         #expect(recorded?.galleryName == "Family Sync")
         #expect(recorded?.errorMessage.contains("Nana Frame") == true)
         #expect(recorded?.errorMessage.contains("Canvas is offline") == true)
+        #expect(deletedGalleryIDs.isEmpty)
+        #expect(stateStore.trackedGalleryIDs(for: instance.storageKey).contains(44))
 
-        // Run 2: device back online -> pending push is cleared
+        // Run 2: device back online -> pending push is cleared AND old gallery 44 is now cleaned up!
         failDeviceControl = false
         try await engine.runSync(
             config: AppConfig(instances: [instance]),
@@ -822,6 +834,8 @@ struct CoreIntegrationTests {
             clientFactory: clientFactory
         )
         #expect(stateStore.pendingDevicePush(for: instance.storageKey) == nil)
+        #expect(deletedGalleryIDs == [44])
+        #expect(!stateStore.trackedGalleryIDs(for: instance.storageKey).contains(44))
     }
 
     @Test("MeuralDevice decodes orientation and gallery variants; SyncEngine auto-detects landscape frame")

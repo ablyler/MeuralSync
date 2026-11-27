@@ -22,10 +22,16 @@ jobs:
 
       - name: Resolve version
         id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.version }}"
+            TAG="${INPUT_VERSION}"
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+            echo "Invalid version tag: $TAG" >&2
+            exit 1
           fi
           VERSION="${TAG#v}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -47,10 +53,12 @@ jobs:
 
       - name: Package zip & generate Sparkle appcast
         env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          REPO_SLUG: ${{ github.repository }}
           SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
         run: |
           mkdir -p release_assets
-          ZIP_NAME="MeuralSync-${{ steps.version.outputs.tag }}.zip"
+          ZIP_NAME="MeuralSync-${RELEASE_TAG}.zip"
           ditto -c -k --keepParent dist/MeuralSync.app "release_assets/${ZIP_NAME}"
 
           if [ -n "$SPARKLE_PRIVATE_ED_KEY" ]; then
@@ -65,7 +73,7 @@ jobs:
             fi
             echo "$SPARKLE_PRIVATE_ED_KEY" | "$GENERATE_APPCAST" \
               --ed-key-file - \
-              --download-url-prefix "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/" \
+              --download-url-prefix "https://github.com/${REPO_SLUG}/releases/download/${RELEASE_TAG}/" \
               release_assets
           else
             echo "SPARKLE_PRIVATE_ED_KEY secret not set; skipping appcast.xml generation."
@@ -74,8 +82,8 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          gh release create "$TAG" release_assets/* \
-            --title "MeuralSync $TAG" \
+          gh release create "$RELEASE_TAG" release_assets/* \
+            --title "MeuralSync $RELEASE_TAG" \
             --generate-notes

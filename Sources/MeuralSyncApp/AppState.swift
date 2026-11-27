@@ -75,6 +75,10 @@ final class AppState {
         var id: String { instance.storageKey }
     }
 
+    var isRetryingDevicePush: Bool {
+        !retryingPushInstanceIDs.isEmpty
+    }
+
     var pendingDevicePushes: [PendingPushItem] {
         _ = pendingPushVersion
         return config.instances.compactMap { instance in
@@ -319,7 +323,9 @@ final class AppState {
     func deleteCredentials(for instance: InstanceConfig) {
         try? credentialStore.deleteCredentials(for: instance.storageKey)
         try? credentialStore.deleteCredentials(for: instance.name)
+        syncStateStore.clearInstanceState(for: instance.storageKey)
         credentialsVersion += 1
+        pendingPushVersion += 1
     }
 
     func testConnection(for instance: InstanceConfig) async -> Result<Int, Error> {
@@ -370,7 +376,7 @@ final class AppState {
 
     func retryDevicePush(for instance: InstanceConfig) {
         let key = instance.storageKey
-        guard !isSyncing, !retryingPushInstanceIDs.contains(key) else { return }
+        guard !isSyncing, !isMutatingGalleries, !retryingPushInstanceIDs.contains(key) else { return }
         guard let pending = syncStateStore.pendingDevicePush(for: key) else { return }
 
         retryingPushInstanceIDs.insert(key)
@@ -383,20 +389,32 @@ final class AppState {
             do {
                 let client = self.makeMeuralClient(for: instance)
                 let count = try await client.pushGalleryToDevices(galleryID: pending.galleryID)
-                self.syncStateStore.setPendingDevicePush(nil, for: key)
-                self.pendingPushVersion += 1
+                guard count > 0 else {
+                    throw MeuralAPIError.httpError(
+                        statusCode: 0,
+                        method: "PUSH",
+                        url: "devices",
+                        body: "No Meural frames found on account"
+                    )
+                }
+                if self.syncStateStore.pendingDevicePush(for: key)?.galleryID == pending.galleryID {
+                    self.syncStateStore.setPendingDevicePush(nil, for: key)
+                    self.pendingPushVersion += 1
+                }
                 let label = count == 1 ? "1 Meural frame" : "\(count) Meural frames"
                 self.appendLog("Successfully sent '\(pending.galleryName)' to \(label) for \(instance.name).")
             } catch {
-                self.syncStateStore.setPendingDevicePush(
-                    PendingDevicePush(
-                        galleryID: pending.galleryID,
-                        galleryName: pending.galleryName,
-                        errorMessage: error.localizedDescription
-                    ),
-                    for: key
-                )
-                self.pendingPushVersion += 1
+                if self.syncStateStore.pendingDevicePush(for: key)?.galleryID == pending.galleryID {
+                    self.syncStateStore.setPendingDevicePush(
+                        PendingDevicePush(
+                            galleryID: pending.galleryID,
+                            galleryName: pending.galleryName,
+                            errorMessage: error.localizedDescription
+                        ),
+                        for: key
+                    )
+                    self.pendingPushVersion += 1
+                }
                 self.appendLog("Retry send to frame failed for \(instance.name): \(error.localizedDescription)")
             }
         }
@@ -405,7 +423,7 @@ final class AppState {
     // MARK: - Sync & Scheduling
 
     func startSync(isScheduled: Bool = false) {
-        guard !isSyncing, !isMutatingGalleries else { return }
+        guard !isSyncing, !isMutatingGalleries, !isRetryingDevicePush else { return }
         isSyncing = true
         lastError = nil
         currentProgress = SyncProgress(instanceName: "", phase: "Starting sync...")

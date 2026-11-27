@@ -138,4 +138,19 @@ struct KeychainStoreTests {
         let verifyStore = KeychainCredentialStore(serviceName: service, backend: backend)
         #expect(try verifyStore.getCredentials(for: "inst-1") == MeuralCredentials(email: "a@example.com", password: "pw1"))
     }
+
+    @Test("Corrupt vault JSON fails closed and deleteCredentials propagates read errors")
+    func corruptVaultFailsClosedAndDeletePropagatesErrors() throws {
+        let backend = MockKeychainBackend()
+        let service = "com.ablyler.MeuralSync.corrupt"
+        backend.seed(service: service, account: KeychainCredentialStore.vaultAccountName, string: "{not valid json")
+
+        let store = KeychainCredentialStore(serviceName: service, backend: backend)
+        #expect(throws: CredentialError.self) {
+            try store.setCredentials(MeuralCredentials(email: "a@example.com", password: "pw"), for: "inst-1")
+        }
+        #expect(throws: CredentialError.self) {
+            try store.deleteCredentials(for: "inst-1")
+        }
+    }
 }

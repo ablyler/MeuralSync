@@ -29,6 +29,7 @@ public protocol SyncStateStoring: Sendable {
 
     func pendingDevicePush(for instanceKey: String) -> PendingDevicePush?
     func setPendingDevicePush(_ push: PendingDevicePush?, for instanceKey: String)
+    func clearInstanceState(for instanceKey: String)
 }
 
 private struct PersistedSyncState: Codable {
@@ -139,6 +140,17 @@ public final class FileSyncStateStore: SyncStateStoring, @unchecked Sendable {
         }
     }
 
+    public func clearInstanceState(for instanceKey: String) {
+        lock.withLock {
+            let removedG = state.galleryIDsByInstance.removeValue(forKey: instanceKey) != nil
+            let removedI = state.itemIDsByInstance.removeValue(forKey: instanceKey) != nil
+            let removedP = state.pendingDevicePushByInstance.removeValue(forKey: instanceKey) != nil
+            if removedG || removedI || removedP {
+                persistLocked()
+            }
+        }
+    }
+
     private func persistLocked() {
         do {
             try FileManager.default.createDirectory(
@@ -193,5 +205,13 @@ public final class InMemorySyncStateStore: SyncStateStoring, @unchecked Sendable
 
     public func setPendingDevicePush(_ push: PendingDevicePush?, for instanceKey: String) {
         lock.withLock { pendingPushes[instanceKey] = push }
+    }
+
+    public func clearInstanceState(for instanceKey: String) {
+        lock.withLock {
+            galleryIDs.removeValue(forKey: instanceKey)
+            itemIDs.removeValue(forKey: instanceKey)
+            pendingPushes.removeValue(forKey: instanceKey)
+        }
     }
 }

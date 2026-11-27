@@ -187,6 +187,7 @@ struct MenuBarView: View {
                             || !appState.isPhotoAccessGranted
                             || !missingCreds.isEmpty
                             || appState.isMutatingGalleries
+                            || appState.isRetryingDevicePush
                     )
                 }
 

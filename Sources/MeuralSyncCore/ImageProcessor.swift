@@ -468,8 +468,10 @@ public enum ImageProcessor {
         locationAliases: [String: String]? = nil,
         personAliases: [String: String] = Captions.defaultPersonAliases,
         dateFormat: CaptionDateFormat = .medium,
-        measurer: any TextMeasuring = CoreTextMeasurer()
+        measurer: any TextMeasuring = CoreTextMeasurer(),
+        primaryMeasurer: (any TextMeasuring)? = nil
     ) -> CaptionLayout {
+        let resolvedPrimaryMeasurer = primaryMeasurer ?? measurer
         let scale = min(1.0, Double(imageWidth) / 1080.0, Double(imageHeight) / 360.0)
         let margin = max(1, Int((20.0 * scale).rounded()))
         let padX = max(1, Int((20.0 * scale).rounded()))
@@ -502,12 +504,12 @@ public enum ImageProcessor {
             maxWidth: textMaxWidth,
             fontSize: Double(primarySize),
             personAliases: personAliases,
-            measurer: measurer
+            measurer: resolvedPrimaryMeasurer
         )
 
-        var rawRows: [(String, Int)] = []
+        var rawRows: [(String, Int, Bool)] = []
         if !names.isEmpty {
-            rawRows.append((names, primarySize))
+            rawRows.append((names, primarySize, true))
         }
 
         var metadata = dateFormat.format(photo.date)
@@ -521,15 +523,16 @@ public enum ImageProcessor {
             fontSize: Double(secondarySize),
             measurer: measurer
         )
-        rawRows.append((fittedMetadata, secondarySize))
+        rawRows.append((fittedMetadata, secondarySize, false))
 
         var top = margin + padYTop
         var layoutRows: [CaptionRow] = []
         var textPanelWidth = 0
 
-        for (text, size) in rawRows {
+        for (text, size, isPrimary) in rawRows {
             if text.isEmpty { continue }
-            let metrics = measurer.measure(text, fontSize: Double(size))
+            let rowMeasurer = isPrimary ? resolvedPrimaryMeasurer : measurer
+            let metrics = rowMeasurer.measure(text, fontSize: Double(size))
             let ascent = Int(ceil(metrics.ascender))
             let descent = Int(ceil(abs(metrics.descender)))
             layoutRows.append(CaptionRow(text: text, fontSize: size, baselineY: top + ascent))
@@ -580,7 +583,8 @@ public enum ImageProcessor {
             locationAliases: locationAliases,
             personAliases: personAliases,
             dateFormat: dateFormat,
-            measurer: secondaryMeasurer
+            measurer: secondaryMeasurer,
+            primaryMeasurer: primaryMeasurer
         )
 
         guard let ctx = makeSRGBContext(width: width, height: height) else {

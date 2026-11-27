@@ -97,13 +97,13 @@ public struct MeuralDevice: Codable, Sendable, Equatable, Identifiable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try container.decode(Int.self, forKey: .id)
-        let decodedAlias = try container.decodeIfPresent(String.self, forKey: .alias)
-        let decodedName = try container.decodeIfPresent(String.self, forKey: .name)
+        let decodedAlias = (try? container.decodeIfPresent(String.self, forKey: .alias)) ?? nil
+        let decodedName = (try? container.decodeIfPresent(String.self, forKey: .name)) ?? nil
         self.alias = (decodedAlias?.isEmpty == false ? decodedAlias : nil)
             ?? (decodedName?.isEmpty == false ? decodedName : nil)
-        self.orientation = try container.decodeIfPresent(String.self, forKey: .orientation)
+        self.orientation = (try? container.decodeIfPresent(String.self, forKey: .orientation)) ?? nil
 
-        var ids: [Int]? = try container.decodeIfPresent([Int].self, forKey: .galleryIds)
+        var ids: [Int]? = (try? container.decodeIfPresent([Int].self, forKey: .galleryIds)) ?? nil
         if ids == nil {
             if let intGalleries = try? container.decodeIfPresent([Int].self, forKey: .galleries) {
                 ids = intGalleries
@@ -463,21 +463,52 @@ public actor MeuralClient {
     }
 
     /// Sends `galleryID` to all Meural devices on the account (if not already present) and switches each frame to it.
+    /// Attempts every device even if one fails, then throws a combined error if any device failed.
     /// Returns the number of devices updated.
     @discardableResult
     public func pushGalleryToDevices(galleryID: Int) async throws -> Int {
         let devices = try await getDevices()
         guard !devices.isEmpty else { return 0 }
+        var failures: [String] = []
         for device in devices {
             try Task.checkCancellation()
+            let label = device.alias?.isEmpty == false ? device.alias! : "Device \(device.id)"
             let alreadyOnDevice = device.galleryIds?.contains(galleryID) ?? false
+            var sendFailed = false
             if !alreadyOnDevice {
                 log("Sending gallery \(galleryID) to device \(device.id)")
-                try await sendGalleryToDevice(deviceID: device.id, galleryID: galleryID)
-                try await sleepHandler(5)
+                do {
+                    try await sendGalleryToDevice(deviceID: device.id, galleryID: galleryID)
+                    try await sleepHandler(5)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let err as URLError where err.code == .cancelled {
+                    throw CancellationError()
+                } catch {
+                    sendFailed = true
+                    failures.append("\(label): \(error.localizedDescription)")
+                }
             }
-            log("Switching device \(device.id) to gallery \(galleryID)")
-            try await switchDeviceToGallery(deviceID: device.id, galleryID: galleryID)
+            if !sendFailed {
+                log("Switching device \(device.id) to gallery \(galleryID)")
+                do {
+                    try await switchDeviceToGallery(deviceID: device.id, galleryID: galleryID)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let err as URLError where err.code == .cancelled {
+                    throw CancellationError()
+                } catch {
+                    failures.append("\(label): \(error.localizedDescription)")
+                }
+            }
+        }
+        if !failures.isEmpty {
+            throw MeuralAPIError.httpError(
+                statusCode: 0,
+                method: "PUSH",
+                url: "devices",
+                body: failures.joined(separator: "; ")
+            )
         }
         return devices.count
     }
@@ -979,7 +1010,7 @@ public actor MeuralClient {
                 url: url,
                 body: String(body)
             )
-            logger.error("\(err.localizedDescription, privacy: .public)")
+            logger.error("\(err.localizedDescription, privacy: .private)")
             throw err
         }
         return data
@@ -1009,7 +1040,7 @@ public actor MeuralClient {
     }
 
     private func log(_ message: String) {
-        logger.info("\(message, privacy: .public)")
+        logger.info("\(message, privacy: .private)")
         logHandler(message)
     }
 }
