@@ -81,8 +81,12 @@ struct GalleriesView: View {
             ?? appState.config.instances.first
     }
 
+    private var hasLinkedDevice: Bool {
+        selectedInstance?.deviceId != nil
+    }
+
     private var displayedGalleries: [MeuralGallery] {
-        if showAllAccountAlbums {
+        if !hasLinkedDevice || showAllAccountAlbums {
             return galleries
         }
         return galleries.filter { deviceGalleryIDs.contains($0.id) }
@@ -344,21 +348,23 @@ struct GalleriesView: View {
                 .fixedSize()
         }
 
-        Picker("Filter", selection: $showAllAccountAlbums) {
-            Text("On Frame").tag(false)
-            Text("All").tag(true)
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
-        .help("Show only albums loaded on your Meural frame, or all albums on the account")
-        .onChange(of: showAllAccountAlbums) { _, _ in
-            if let current = selectedGalleryID,
-               !displayedGalleries.contains(where: { $0.id == current })
-            {
-                selectedGalleryID = displayedGalleries.first?.id
-            } else if selectedGalleryID == nil {
-                selectedGalleryID = displayedGalleries.first?.id
+        if hasLinkedDevice {
+            Picker("Filter", selection: $showAllAccountAlbums) {
+                Text("On Frame").tag(false)
+                Text("All").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Show only albums loaded on your Meural frame, or all albums on the account")
+            .onChange(of: showAllAccountAlbums) { _, _ in
+                if let current = selectedGalleryID,
+                   !displayedGalleries.contains(where: { $0.id == current })
+                {
+                    selectedGalleryID = displayedGalleries.first?.id
+                } else if selectedGalleryID == nil {
+                    selectedGalleryID = displayedGalleries.first?.id
+                }
             }
         }
 
@@ -616,20 +622,20 @@ struct GalleriesView: View {
         do {
             let client = appState.makeMeuralClient(for: instance)
             let fetched = try await client.getGalleries()
-            let devices: [MeuralDevice]
             var lookupFailure: String?
-            do {
-                devices = try await client.getDevices()
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let err as URLError where err.code == .cancelled {
-                throw CancellationError()
-            } catch {
-                devices = []
-                lookupFailure = "Failed to load frame info: \(error.localizedDescription)"
+            var targetDevices: [MeuralDevice] = []
+            if let linkedDeviceID = instance.deviceId {
+                do {
+                    let devices = try await client.getDevices()
+                    targetDevices = devices.filter { $0.id == linkedDeviceID }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let err as URLError where err.code == .cancelled {
+                    throw CancellationError()
+                } catch {
+                    lookupFailure = "Failed to load frame info: \(error.localizedDescription)"
+                }
             }
-
-            let targetDevices = instance.deviceId.map { id in devices.filter { $0.id == id } } ?? devices
             var matchedIDs = Set<Int>()
             var activeIDs = Set<Int>()
             var extraGalleriesByID: [Int: MeuralGallery] = [:]

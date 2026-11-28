@@ -2,6 +2,10 @@
 
 All notable changes to **MeuralSync** are documented in this file.
 
+## v1.0.21
+
+- Hid the **On Frame / All** filter and skipped frame-specific badges (`Showing`, detected orientation) in **Meural Galleries** when the selected instance has no Meural frame linked, showing all account albums directly.
+
 ## v1.0.20
 
 - Added `CHANGELOG.md` and embedded Sparkle release notes so the macOS Software Update dialog displays what changed whenever an update is available.
