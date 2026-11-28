@@ -352,13 +352,18 @@ struct GalleriesView: View {
             }
 
             if let instance = selectedInstance, let gallery = selectedGallery {
+                let hasTargetDevice = instance.deviceId != nil
                 Button {
                     Task { await sendGalleryToDevice(instance: instance, gallery: gallery) }
                 } label: {
                     Label("Send to Frame", systemImage: "tv.and.mediabox")
                 }
-                .disabled(mutationsDisabled)
-                .help("Push and switch Meural frame(s) to this album")
+                .disabled(mutationsDisabled || !hasTargetDevice)
+                .help(
+                    hasTargetDevice
+                        ? "Push and switch the configured Meural frame to this album"
+                        : "Select a Target Meural Frame for this instance in Settings to enable Send to Frame"
+                )
 
                 Button(role: .destructive) {
                     galleryPendingDelete = PendingGalleryDelete(instance: instance, gallery: gallery)
@@ -470,7 +475,7 @@ struct GalleriesView: View {
                             Button("Send to Frame") {
                                 Task { await sendGalleryToDevice(instance: instance, gallery: gallery) }
                             }
-                            .disabled(mutationsDisabled)
+                            .disabled(mutationsDisabled || instance.deviceId == nil)
                             Divider()
                             Button("Delete Album…", role: .destructive) {
                                 galleryPendingDelete = PendingGalleryDelete(instance: instance, gallery: gallery)

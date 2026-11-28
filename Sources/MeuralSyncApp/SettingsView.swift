@@ -180,7 +180,7 @@ private struct InstanceEditorView: View {
                 if instance.sendToDevices {
                     HStack {
                         Picker("Target Meural Frame", selection: $instance.deviceId) {
-                            Text("All Frames on Account").tag(Int?.none)
+                            Text("None (Select a Frame)").tag(Int?.none)
                             ForEach(availableDevices) { device in
                                 Text(deviceDisplayLabel(device)).tag(Optional(device.id))
                             }
@@ -207,10 +207,14 @@ private struct InstanceEditorView: View {
                         Text(devicesLoadError)
                             .font(.caption)
                             .foregroundStyle(.orange)
-                    } else if availableDevices.isEmpty && appState.hasCredentials(for: instance) && !isLoadingDevices {
-                        Text("Click refresh to load your Meural frames, or leave set to All Frames.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    } else if instance.deviceId == nil && !isLoadingDevices {
+                        Text(
+                            availableDevices.isEmpty
+                                ? "Click refresh to load your Meural frames and choose a target frame."
+                                : "Select a Meural frame to enable pushing and Send to Frame."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                     }
                 }
                 Picker("Frame Orientation", selection: $instance.frameOrientation) {
@@ -386,6 +390,9 @@ private struct InstanceEditorView: View {
                 let fetched = try await appState.fetchDevices(for: targetInstance)
                 if instance.id == targetInstance.id {
                     availableDevices = fetched
+                    if instance.deviceId == nil, fetched.count == 1 {
+                        instance.deviceId = fetched[0].id
+                    }
                 }
             } catch {
                 if instance.id == targetInstance.id {
