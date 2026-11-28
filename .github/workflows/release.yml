@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Resolve version
         id: version
@@ -61,6 +63,12 @@ jobs:
           ZIP_NAME="MeuralSync-${RELEASE_TAG}.zip"
           ditto -c -k --keepParent dist/MeuralSync.app "release_assets/${ZIP_NAME}"
 
+          python3 scripts/extract_release_notes.py "$RELEASE_TAG" \
+            --changelog CHANGELOG.md \
+            --repo "$REPO_SLUG" \
+            --markdown-out /tmp/release_notes.md \
+            --html-out "release_assets/MeuralSync-${RELEASE_TAG}.html"
+
           if [ -n "$SPARKLE_PRIVATE_ED_KEY" ]; then
             GENERATE_APPCAST=$(find .build/artifacts -name "generate_appcast" -type f | head -n 1)
             if [ -z "$GENERATE_APPCAST" ]; then
@@ -73,11 +81,15 @@ jobs:
             fi
             echo "$SPARKLE_PRIVATE_ED_KEY" | "$GENERATE_APPCAST" \
               --ed-key-file - \
+              --embed-release-notes \
               --download-url-prefix "https://github.com/${REPO_SLUG}/releases/download/${RELEASE_TAG}/" \
               release_assets
           else
             echo "SPARKLE_PRIVATE_ED_KEY secret not set; skipping appcast.xml generation."
           fi
+
+          # Remove sidecar HTML after embedding into appcast.xml so only the zip & appcast are uploaded.
+          rm -f "release_assets/MeuralSync-${RELEASE_TAG}.html"
 
       - name: Create GitHub Release
         env:
@@ -87,4 +99,4 @@ jobs:
           gh release create "$RELEASE_TAG" release_assets/* \
             --target "$GITHUB_SHA" \
             --title "MeuralSync $RELEASE_TAG" \
-            --generate-notes
+            --notes-file /tmp/release_notes.md
