@@ -28,6 +28,7 @@ public enum SyncError: Error, LocalizedError, Sendable {
     case missingTargetGallery(String)
     case targetGalleryNotFound(String, Int)
     case missingSourceAlbum(String)
+    case missingFrameOrientation(String)
     case noPhotosUploaded(String)
     case tooManyUploadFailures(Int)
     case multipleInstanceFailures([(instanceName: String, message: String)])
@@ -44,6 +45,8 @@ public enum SyncError: Error, LocalizedError, Sendable {
             return "Target Meural gallery #\(galleryID) for '\(instanceName)' was not found on the account."
         case .missingSourceAlbum(let instanceName):
             return "No Apple Photos album is selected for '\(instanceName)'. Choose an album in Settings or switch to People selection mode."
+        case .missingFrameOrientation(let instanceName):
+            return "Frame orientation is required for '\(instanceName)' when no Meural frame is selected. Choose Portrait or Landscape in Settings, or select a Target Meural Frame."
         case .noPhotosUploaded(let instanceName):
             return "No photos were uploaded for '\(instanceName)'. Existing galleries and frames were left unchanged."
         case .tooManyUploadFailures(let count):
@@ -323,8 +326,11 @@ public actor SyncEngine {
         case .landscape:
             resolvedOrientation = .landscape
         case .auto:
+            guard instance.sendToDevices, let selectedDeviceID = instance.deviceId else {
+                throw SyncError.missingFrameOrientation(instance.name)
+            }
             let allDevices = try await client.getDevices()
-            let targetDevices = instance.deviceId.map { id in allDevices.filter { $0.id == id } } ?? allDevices
+            let targetDevices = allDevices.filter { $0.id == selectedDeviceID }
             let detectedOrientations = targetDevices.compactMap(\.parsedOrientation)
             if let detected = detectedOrientations.first {
                 resolvedOrientation = detected

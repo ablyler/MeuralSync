@@ -234,6 +234,7 @@ struct CoreIntegrationTests {
             name: "Living Room",
             enabled: true,
             sendToDevices: false,
+            frameOrientation: .portrait,
             photoCount: 2,
             destinationAlbumName: "Family Photos - :date:",
             randomizeGalleryName: false,
@@ -798,6 +799,7 @@ struct CoreIntegrationTests {
             name: "Grandparents Frame",
             enabled: true,
             sendToDevices: true,
+            deviceId: 38086,
             photoCount: 1,
             destinationAlbumName: "Family Sync",
             randomizeGalleryName: false,
@@ -954,7 +956,8 @@ struct CoreIntegrationTests {
         let instance = InstanceConfig(
             name: "Horizontal Frame",
             enabled: true,
-            sendToDevices: false,
+            sendToDevices: true,
+            deviceId: 42,
             frameOrientation: .auto,
             photoCount: 3,
             destinationAlbumName: "Landscape Sync",
@@ -972,7 +975,7 @@ struct CoreIntegrationTests {
                 return (Data(#"{"AuthenticationResult":{"AccessToken":"tok"}}"#.utf8), 200)
             }
             if method == "GET" && url.contains("/user/devices") {
-                return (Data(#"{"data":[{"id":42,"alias":"Horizontal","orientation":"horizontal","galleryIds":[]}]}"#.utf8), 200)
+                return (Data(#"{"data":[{"id":42,"alias":"Horizontal","orientation":"horizontal","galleryIds":[88]}]}"#.utf8), 200)
             }
             if method == "GET" && url.contains("/user/galleries") {
                 return (Data(#"{"data":[]}"#.utf8), 200)
@@ -1274,6 +1277,7 @@ struct CoreIntegrationTests {
         let cfg = InstanceConfig(
             name: "Grandparents",
             sendToDevices: false,
+            frameOrientation: .portrait,
             gallerySyncMode: .updateExisting,
             targetGalleryId: 77,
             photoSelectionMode: .album,
@@ -1422,6 +1426,22 @@ struct CoreIntegrationTests {
         await #expect(throws: SyncError.self) {
             try await engine.runSync(
                 config: AppConfig(instances: [missingTargetGalleryCfg]),
+                credentialStore: store,
+                photoLibrary: library,
+                exporter: exporter,
+                stateStore: stateStore,
+                clientFactory: { name, credStore, log in
+                    MeuralClient(instanceName: name, credentialStore: credStore, transport: transport, sleepHandler: { _ in }, logHandler: log)
+                }
+            )
+        }
+
+        var missingOrientationCfg = cfg
+        missingOrientationCfg.frameOrientation = .auto
+        missingOrientationCfg.deviceId = nil
+        await #expect(throws: SyncError.self) {
+            try await engine.runSync(
+                config: AppConfig(instances: [missingOrientationCfg]),
                 credentialStore: store,
                 photoLibrary: library,
                 exporter: exporter,

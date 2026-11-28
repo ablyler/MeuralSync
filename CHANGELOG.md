@@ -2,6 +2,10 @@
 
 All notable changes to **MeuralSync** are documented in this file.
 
+## v1.0.23
+
+- Required an explicit **Frame Orientation** (**Portrait** or **Landscape**) when no Meural frame is selected for an instance, hiding **Auto (from Meural)** in Settings and validating before sync.
+
 ## v1.0.22
 
 - Added a **Once a Day (Retry Until Synced)** schedule frequency, ported from the osxphotos2meural launchd job: syncs at the first chance each day and retries every hour until a sync succeeds, with no retry cap. Any successful sync (manual or scheduled) counts toward the day.

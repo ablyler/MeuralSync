@@ -173,6 +173,10 @@ private struct InstanceEditorView: View {
         appState.hasCredentials(for: instance)
     }
 
+    private var hasSelectedDevice: Bool {
+        instance.sendToDevices && instance.deviceId != nil
+    }
+
     var body: some View {
         Form {
             Section("General") {
@@ -229,9 +233,22 @@ private struct InstanceEditorView: View {
                     }
                 }
                 Picker("Frame Orientation", selection: $instance.frameOrientation) {
-                    ForEach(FrameOrientation.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
+                    if hasSelectedDevice {
+                        ForEach(FrameOrientation.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    } else {
+                        if instance.frameOrientation == .auto {
+                            Text("Select Orientation (Required)").tag(FrameOrientation.auto)
+                        }
+                        Text(FrameOrientation.portrait.displayName).tag(FrameOrientation.portrait)
+                        Text(FrameOrientation.landscape.displayName).tag(FrameOrientation.landscape)
                     }
+                }
+                if !hasSelectedDevice && instance.frameOrientation == .auto {
+                    Text("Frame orientation is required when no Meural frame is selected. Choose Portrait or Landscape.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
                 Picker("Caption Date Format", selection: $instance.captionDateFormat) {
                     ForEach(CaptionDateFormat.allCases) { fmt in
