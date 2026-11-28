@@ -852,7 +852,17 @@ struct CoreIntegrationTests {
         let device = try JSONDecoder().decode(MeuralDevice.self, from: json)
         #expect(device.alias == "Living Room Horizontal")
         #expect(device.parsedOrientation == .landscape)
+        #expect(device.activeGalleryId == 103)
         #expect(Set(device.galleryIds ?? []) == Set([101, 102, 103]))
+
+        let frameStatusJSON = Data(#"{"id":44,"frame_status":{"current_gallery":305}}"#.utf8)
+        let frameStatusDevice = try JSONDecoder().decode(MeuralDevice.self, from: frameStatusJSON)
+        #expect(frameStatusDevice.activeGalleryId == 305)
+        #expect(frameStatusDevice.galleryIds == [305])
+
+        let activeGalleryJSON = Data(#"{"id":305,"name":"Now Showing","active":true,"itemIds":[1,2]}"#.utf8)
+        let activeGallery = try JSONDecoder().decode(MeuralGallery.self, from: activeGalleryJSON)
+        #expect(activeGallery.isActiveOnDevice == true)
 
         let verticalJSON = Data(#"{"id":43,"alias":"Hallway","orientation":"vertical","galleryIds":[201]}"#.utf8)
         let verticalDevice = try JSONDecoder().decode(MeuralDevice.self, from: verticalJSON)
@@ -1062,5 +1072,51 @@ struct CoreIntegrationTests {
         }
         // Instance 2 still completed its upload even though Instance 1 failed!
         #expect(inst2Uploaded == 1)
+    }
+
+    @Test("deleteGalleryAndOrphanItems with deleteAllItems deletes album and all its photos including fallback lookup")
+    func deleteAlbumAndAllItems() async throws {
+        let store = InMemoryCredentialStore()
+        try store.setCredentials(MeuralCredentials(email: "u@example.com", password: "pw"), for: "inst-delall")
+
+        var detached: [Int] = []
+        var deletedItems: [Int] = []
+        var galleryDeleted = false
+        let transport = MockTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            let method = request.httpMethod ?? "GET"
+            if url.contains("cognito-idp") {
+                return (Data(#"{"AuthenticationResult":{"AccessToken":"tok"}}"#.utf8), 200)
+            }
+            if method == "GET" && url.hasSuffix("/galleries/50") {
+                // Simulate /galleries/{id} omitting itemIds so fallback /galleries/{id}/items is exercised
+                return (Data(#"{"data":{"id":50,"name":"Old Album"}}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/galleries/50/items") {
+                return (Data(#"{"data":[{"id":501},{"id":502}]}"#.utf8), 200)
+            }
+            if method == "DELETE" && url.contains("/galleries/50/items/") {
+                if let id = Int(url.split(separator: "/").last ?? "") { detached.append(id) }
+                return (Data(#"{}"#.utf8), 200)
+            }
+            if method == "DELETE" && url.hasSuffix("/galleries/50") {
+                galleryDeleted = true
+                return (Data(#"{}"#.utf8), 200)
+            }
+            if method == "DELETE" && url.contains("/items/") {
+                if let id = Int(url.split(separator: "/").last ?? "") { deletedItems.append(id) }
+                return (Data(#"{}"#.utf8), 200)
+            }
+            return (Data(#"{"data":[]}"#.utf8), 200)
+        }
+
+        let client = MeuralClient(instanceName: "inst-delall", credentialStore: store, transport: transport, sleepHandler: { _ in })
+        let result = try await client.deleteGalleryAndOrphanItems(galleryID: 50, deleteAllItems: true)
+        #expect(result.galleryDeleted == true)
+        #expect(galleryDeleted == true)
+        #expect(Set(detached) == Set([501, 502]))
+        #expect(result.deletedItemIDs == Set([501, 502]))
+        #expect(Set(deletedItems) == Set([501, 502]))
+        #expect(result.skippedOrphanCleanup == false)
     }
 }

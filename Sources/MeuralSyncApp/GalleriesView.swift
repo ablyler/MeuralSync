@@ -41,6 +41,7 @@ struct GalleriesView: View {
     @State private var galleries: [MeuralGallery] = []
     @State private var accountGalleryIDs: Set<Int> = []
     @State private var deviceGalleryIDs: Set<Int> = []
+    @State private var activeGalleryIDs: Set<Int> = []
     @State private var deviceLookupError: String?
     @State private var detectedOrientation: CanvasOrientation?
     @State private var showAllAccountAlbums = false
@@ -196,10 +197,17 @@ struct GalleriesView: View {
             ),
             titleVisibility: .visible
         ) {
-            Button("Delete Album", role: .destructive) {
+            Button("Delete Album & All Photos", role: .destructive) {
                 if let pending = galleryPendingDelete {
                     galleryPendingDelete = nil
-                    Task { await deleteGallery(pending) }
+                    Task { await deleteGallery(pending, deleteAllItems: true) }
+                }
+            }
+            .disabled(mutationsDisabled)
+            Button("Delete Album (Keep Shared Photos)", role: .destructive) {
+                if let pending = galleryPendingDelete {
+                    galleryPendingDelete = nil
+                    Task { await deleteGallery(pending, deleteAllItems: false) }
                 }
             }
             .disabled(mutationsDisabled)
@@ -207,7 +215,7 @@ struct GalleriesView: View {
                 galleryPendingDelete = nil
             }
         } message: {
-            Text("This deletes the gallery on Meural and removes any photos that are not used by other albums.")
+            Text("\"Delete Album & All Photos\" permanently deletes this gallery and every photo in it from your Meural account. \"Keep Shared Photos\" only removes photos not used by other albums.")
         }
         .confirmationDialog(
             "Delete this photo?",
@@ -386,6 +394,14 @@ struct GalleriesView: View {
                                 Text("\(gallery.itemIds.count) \(gallery.itemIds.count == 1 ? "photo" : "photos")")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+                                if activeGalleryIDs.contains(gallery.id) {
+                                    Text("Showing")
+                                        .font(.caption2.weight(.medium))
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(Color.green.opacity(0.18), in: Capsule())
+                                        .foregroundStyle(.green)
+                                }
                                 if managed {
                                     Text("MeuralSync")
                                         .font(.caption2)
@@ -473,6 +489,7 @@ struct GalleriesView: View {
         galleries = []
         accountGalleryIDs = []
         deviceGalleryIDs = []
+        activeGalleryIDs = []
         deviceLookupError = nil
         detectedOrientation = nil
         items = []
@@ -510,15 +527,23 @@ struct GalleriesView: View {
             }
 
             var matchedIDs = Set<Int>()
+            var activeIDs = Set<Int>()
             var extraGalleriesByID: [Int: MeuralGallery] = [:]
             for device in devices {
                 if let ids = device.galleryIds {
                     matchedIDs.formUnion(ids)
                 }
+                if let activeID = device.activeGalleryId {
+                    activeIDs.insert(activeID)
+                    matchedIDs.insert(activeID)
+                }
                 do {
                     let deviceGalleries = try await client.getDeviceGalleries(deviceID: device.id)
                     for g in deviceGalleries {
                         matchedIDs.insert(g.id)
+                        if g.isActiveOnDevice == true {
+                            activeIDs.insert(g.id)
+                        }
                         extraGalleriesByID[g.id] = g
                     }
                 } catch is CancellationError {
@@ -541,8 +566,14 @@ struct GalleriesView: View {
                 mergedByID[g.id] = g
             }
             accountGalleryIDs = Set(fetched.map(\.id))
-            galleries = mergedByID.values.sorted { $0.id > $1.id }
+            galleries = mergedByID.values.sorted { lhs, rhs in
+                let lhsActive = activeIDs.contains(lhs.id)
+                let rhsActive = activeIDs.contains(rhs.id)
+                if lhsActive != rhsActive { return lhsActive }
+                return lhs.id > rhs.id
+            }
             deviceGalleryIDs = matchedIDs
+            activeGalleryIDs = activeIDs
             deviceLookupError = lookupFailure
             detectedOrientation = devices.compactMap(\.parsedOrientation).first
             if let prev = previousGalleryID, displayedGalleries.contains(where: { $0.id == prev }) {
@@ -623,6 +654,7 @@ struct GalleriesView: View {
                 let label = count == 1 ? "1 Meural frame" : "\(count) Meural frames"
                 statusMessage = "Sent '\(gallery.name)' to \(label)."
                 deviceGalleryIDs.insert(gallery.id)
+                activeGalleryIDs = [gallery.id]
                 appState.clearPendingDevicePush(for: instance)
                 appState.appendLog("Manually sent album '\(gallery.name)' (id: \(gallery.id)) to \(label).")
             }
@@ -637,33 +669,42 @@ struct GalleriesView: View {
         }
     }
 
-    private func deleteGallery(_ pending: PendingGalleryDelete) async {
+    private func deleteGallery(_ pending: PendingGalleryDelete, deleteAllItems: Bool) async {
         guard !mutationsDisabled else { return }
         appState.isMutatingGalleries = true
         errorMessage = nil
+        statusMessage = nil
         defer { appState.isMutatingGalleries = false }
 
         do {
             let client = appState.makeMeuralClient(for: pending.instance)
-            let result = try await client.deleteGalleryAndOrphanItems(galleryID: pending.gallery.id)
+            let result = try await client.deleteGalleryAndOrphanItems(
+                galleryID: pending.gallery.id,
+                deleteAllItems: deleteAllItems
+            )
             if result.galleryDeleted {
                 appState.recordManualGalleryDeletion(
                     pending.gallery.id,
                     deletedItemIDs: result.deletedItemIDs,
                     for: pending.instance
                 )
-                appState.appendLog("Manually deleted album '\(pending.gallery.name)' (id: \(pending.gallery.id)).")
+                let count = result.deletedItemIDs.count
+                let photoLabel = count == 1 ? "1 photo" : "\(count) photos"
+                appState.appendLog("Manually deleted album '\(pending.gallery.name)' (id: \(pending.gallery.id)) and \(photoLabel).")
                 if selectedInstance?.id == pending.instance.id {
                     trackedGalleryIDs.remove(pending.gallery.id)
                     accountGalleryIDs.remove(pending.gallery.id)
                     deviceGalleryIDs.remove(pending.gallery.id)
+                    activeGalleryIDs.remove(pending.gallery.id)
                     galleries.removeAll { $0.id == pending.gallery.id }
                     if selectedGalleryID == pending.gallery.id {
                         selectedGalleryID = displayedGalleries.first?.id
                     }
                 }
                 if result.skippedOrphanCleanup {
-                    errorMessage = "Album deleted, but some orphan photos could not be verified or deleted and were left untouched."
+                    errorMessage = "Album deleted (\(photoLabel) removed), but some remaining photos could not be verified or deleted."
+                } else {
+                    statusMessage = "Deleted '\(pending.gallery.name)' and \(photoLabel)."
                 }
             }
         } catch {

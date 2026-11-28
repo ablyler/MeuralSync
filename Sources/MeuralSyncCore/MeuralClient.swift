@@ -58,12 +58,20 @@ public struct MeuralDevice: Codable, Sendable, Equatable, Identifiable {
     public let alias: String?
     public let orientation: String?
     public let galleryIds: [Int]?
+    public let activeGalleryId: Int?
 
-    public init(id: Int, alias: String? = nil, orientation: String? = nil, galleryIds: [Int]? = nil) {
+    public init(
+        id: Int,
+        alias: String? = nil,
+        orientation: String? = nil,
+        galleryIds: [Int]? = nil,
+        activeGalleryId: Int? = nil
+    ) {
         self.id = id
         self.alias = alias
         self.orientation = orientation
         self.galleryIds = galleryIds
+        self.activeGalleryId = activeGalleryId
     }
 
     public var parsedOrientation: CanvasOrientation? {
@@ -88,10 +96,48 @@ public struct MeuralDevice: Codable, Sendable, Equatable, Identifiable {
         case galleries
         case activeGallery
         case activeGallerySnake = "active_gallery"
+        case currentGallery
+        case currentGallerySnake = "current_gallery"
+        case frameStatus
+        case frameStatusSnake = "frame_status"
     }
 
     private struct GalleryRef: Decodable {
         let id: Int
+    }
+
+    private struct FrameStatusRef: Decodable {
+        let currentGallery: Int?
+        let gallery: Int?
+
+        private enum CodingKeys: String, CodingKey {
+            case currentGallery
+            case currentGallerySnake = "current_gallery"
+            case gallery
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            let cg = (try? c.decodeIfPresent(Int.self, forKey: .currentGallery)) ?? nil
+            let cgs = (try? c.decodeIfPresent(Int.self, forKey: .currentGallerySnake)) ?? nil
+            self.currentGallery = cg ?? cgs
+            self.gallery = (try? c.decodeIfPresent(Int.self, forKey: .gallery)) ?? nil
+        }
+    }
+
+    private static func decodeGalleryID(
+        from container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) -> Int? {
+        for key in keys {
+            if let obj = (try? container.decodeIfPresent(GalleryRef.self, forKey: key)) ?? nil {
+                return obj.id
+            }
+            if let num = (try? container.decodeIfPresent(Int.self, forKey: key)) ?? nil {
+                return num
+            }
+        }
+        return nil
     }
 
     public init(from decoder: Decoder) throws {
@@ -111,19 +157,19 @@ public struct MeuralDevice: Codable, Sendable, Equatable, Identifiable {
                 ids = objGalleries.map(\.id)
             }
         }
-        if let activeObj = try? container.decodeIfPresent(GalleryRef.self, forKey: .activeGallery) {
-            var merged = ids ?? []
-            if !merged.contains(activeObj.id) { merged.append(activeObj.id) }
-            ids = merged
-        } else if let activeObj = try? container.decodeIfPresent(GalleryRef.self, forKey: .activeGallerySnake) {
-            var merged = ids ?? []
-            if !merged.contains(activeObj.id) { merged.append(activeObj.id) }
-            ids = merged
-        } else if let activeID = try? container.decodeIfPresent(Int.self, forKey: .activeGallery) {
-            var merged = ids ?? []
-            if !merged.contains(activeID) { merged.append(activeID) }
-            ids = merged
-        } else if let activeID = try? container.decodeIfPresent(Int.self, forKey: .activeGallerySnake) {
+
+        var activeID = Self.decodeGalleryID(
+            from: container,
+            keys: [.activeGallery, .activeGallerySnake, .currentGallery, .currentGallerySnake]
+        )
+        if activeID == nil {
+            let status = (try? container.decodeIfPresent(FrameStatusRef.self, forKey: .frameStatus)) ?? nil
+                ?? (try? container.decodeIfPresent(FrameStatusRef.self, forKey: .frameStatusSnake)) ?? nil
+            activeID = status?.currentGallery ?? status?.gallery
+        }
+        self.activeGalleryId = activeID
+
+        if let activeID {
             var merged = ids ?? []
             if !merged.contains(activeID) { merged.append(activeID) }
             ids = merged
@@ -137,6 +183,7 @@ public struct MeuralDevice: Codable, Sendable, Equatable, Identifiable {
         try container.encodeIfPresent(alias, forKey: .alias)
         try container.encodeIfPresent(orientation, forKey: .orientation)
         try container.encodeIfPresent(galleryIds, forKey: .galleryIds)
+        try container.encodeIfPresent(activeGalleryId, forKey: .activeGallery)
     }
 }
 
@@ -146,18 +193,30 @@ public struct MeuralGallery: Codable, Sendable, Equatable, Identifiable {
     public let itemIds: [Int]
     /// `true` when `itemIds` was explicitly present in the payload; `false` when omitted.
     public let hasExplicitItemIds: Bool
+    /// `true` if `/devices/{id}/galleries` marked this gallery as currently active on the frame.
+    public let isActiveOnDevice: Bool?
 
-    public init(id: Int, name: String, itemIds: [Int] = [], hasExplicitItemIds: Bool = true) {
+    public init(
+        id: Int,
+        name: String,
+        itemIds: [Int] = [],
+        hasExplicitItemIds: Bool = true,
+        isActiveOnDevice: Bool? = nil
+    ) {
         self.id = id
         self.name = name
         self.itemIds = itemIds
         self.hasExplicitItemIds = hasExplicitItemIds
+        self.isActiveOnDevice = isActiveOnDevice
     }
 
     private enum CodingKeys: String, CodingKey {
         case id
         case name
         case itemIds
+        case active
+        case isActive
+        case isActiveSnake = "is_active"
     }
 
     public init(from decoder: Decoder) throws {
@@ -171,6 +230,10 @@ public struct MeuralGallery: Codable, Sendable, Equatable, Identifiable {
             self.itemIds = []
             self.hasExplicitItemIds = false
         }
+        let a1 = (try? container.decodeIfPresent(Bool.self, forKey: .active)) ?? nil
+        let a2 = (try? container.decodeIfPresent(Bool.self, forKey: .isActive)) ?? nil
+        let a3 = (try? container.decodeIfPresent(Bool.self, forKey: .isActiveSnake)) ?? nil
+        self.isActiveOnDevice = a1 ?? a2 ?? a3
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -180,6 +243,7 @@ public struct MeuralGallery: Codable, Sendable, Equatable, Identifiable {
         if hasExplicitItemIds {
             try container.encode(itemIds, forKey: .itemIds)
         }
+        try container.encodeIfPresent(isActiveOnDevice, forKey: .active)
     }
 }
 
@@ -699,15 +763,26 @@ public actor MeuralClient {
         }
     }
 
-    /// Detaches all items from a gallery, deletes the gallery, and best-effort deletes any detached items
-    /// that are not referenced by any remaining gallery (with an empty-`itemIds` safety guard).
+    /// Detaches all items from a gallery, deletes the gallery, and deletes detached items.
+    /// - When `deleteAllItems == false` (default): only deletes items not referenced by any remaining gallery (with safety guards).
+    /// - When `deleteAllItems == true`: deletes every item that belonged to this gallery from the Meural account.
     @discardableResult
-    public func deleteGalleryAndOrphanItems(galleryID: Int) async throws -> ManualGalleryDeleteResult {
+    public func deleteGalleryAndOrphanItems(
+        galleryID: Int,
+        deleteAllItems: Bool = false
+    ) async throws -> ManualGalleryDeleteResult {
         let detachedItemIDs: Set<Int>
         do {
             let gallery = try await getGallery(id: galleryID)
-            detachedItemIDs = Set(gallery.itemIds)
-            for itemID in gallery.itemIds {
+            var itemIDList = gallery.itemIds
+            if itemIDList.isEmpty {
+                // Fallback to `/galleries/{id}/items` in case `/galleries/{id}` omits `itemIds`.
+                if let fetchedItems = try? await getGalleryItems(galleryID: galleryID), !fetchedItems.isEmpty {
+                    itemIDList = fetchedItems.map(\.id)
+                }
+            }
+            detachedItemIDs = Set(itemIDList)
+            for itemID in itemIDList {
                 try Task.checkCancellation()
                 do {
                     try await deleteGalleryItem(galleryID: galleryID, itemID: itemID)
@@ -735,25 +810,31 @@ public actor MeuralClient {
             return ManualGalleryDeleteResult(galleryDeleted: true, deletedItemIDs: [])
         }
 
-        // Gallery is now deleted on Meural; orphan cleanup is best-effort so partial failures never misreport gallery deletion.
-        let remainingGalleries: [MeuralGallery]
-        do {
-            remainingGalleries = try await getGalleries().filter { $0.id != galleryID }
-        } catch {
-            log("Warning: gallery \(galleryID) deleted, but orphan check failed: \(error.localizedDescription)")
-            return ManualGalleryDeleteResult(galleryDeleted: true, deletedItemIDs: [], skippedOrphanCleanup: true)
-        }
+        let targetItemIDs: Set<Int>
+        if deleteAllItems {
+            targetItemIDs = detachedItemIDs
+        } else {
+            // Gallery is now deleted on Meural; orphan cleanup is best-effort so partial failures never misreport gallery deletion.
+            let remainingGalleries: [MeuralGallery]
+            do {
+                remainingGalleries = try await getGalleries().filter { $0.id != galleryID }
+            } catch {
+                log("Warning: gallery \(galleryID) deleted, but orphan check failed: \(error.localizedDescription)")
+                return ManualGalleryDeleteResult(galleryDeleted: true, deletedItemIDs: [], skippedOrphanCleanup: true)
+            }
 
-        let hasIncompleteInventory = remainingGalleries.contains { !$0.hasExplicitItemIds }
-        let referencedIDs = remainingGalleries.reduce(into: Set<Int>()) { $0.formUnion($1.itemIds) }
-        if hasIncompleteInventory || (!remainingGalleries.isEmpty && referencedIDs.isEmpty) {
-            log("Skipping orphan item deletion after deleting gallery \(galleryID): remaining galleries had incomplete or empty itemIds (safety guard).")
-            return ManualGalleryDeleteResult(galleryDeleted: true, deletedItemIDs: [], skippedOrphanCleanup: true)
+            let hasIncompleteInventory = remainingGalleries.contains { !$0.hasExplicitItemIds }
+            let referencedIDs = remainingGalleries.reduce(into: Set<Int>()) { $0.formUnion($1.itemIds) }
+            if hasIncompleteInventory || (!remainingGalleries.isEmpty && referencedIDs.isEmpty) {
+                log("Skipping orphan item deletion after deleting gallery \(galleryID): remaining galleries had incomplete or empty itemIds (safety guard).")
+                return ManualGalleryDeleteResult(galleryDeleted: true, deletedItemIDs: [], skippedOrphanCleanup: true)
+            }
+            targetItemIDs = detachedItemIDs.subtracting(referencedIDs)
         }
 
         var deletedItemIDs = Set<Int>()
         var skippedOrphanCleanup = false
-        for itemID in detachedItemIDs where !referencedIDs.contains(itemID) {
+        for itemID in targetItemIDs.sorted() {
             if Task.isCancelled {
                 skippedOrphanCleanup = true
                 break
@@ -765,7 +846,7 @@ public actor MeuralClient {
                 deletedItemIDs.insert(itemID)
             } catch {
                 skippedOrphanCleanup = true
-                log("Warning: failed deleting orphan item \(itemID) after gallery delete: \(error.localizedDescription)")
+                log("Warning: failed deleting item \(itemID) after gallery delete: \(error.localizedDescription)")
             }
         }
         return ManualGalleryDeleteResult(
