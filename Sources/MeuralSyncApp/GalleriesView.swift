@@ -62,6 +62,7 @@ struct GalleriesView: View {
 
     @State private var galleryPendingDelete: PendingGalleryDelete?
     @State private var itemPendingDelete: PendingItemDelete?
+    @State private var showingOrphanCleanupConfirmation = false
     @State private var previewTarget: LightboxTarget?
 
     private let gridColumns = [
@@ -238,6 +239,21 @@ struct GalleriesView: View {
         } message: {
             Text("This removes the photo from this album and deletes it from Meural if it is not in any other album.")
         }
+        .confirmationDialog(
+            "Delete unassigned photos on \"\(selectedInstance?.name ?? "")\"?",
+            isPresented: $showingOrphanCleanupConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Unassigned Photos", role: .destructive) {
+                if let instance = selectedInstance {
+                    Task { await cleanupUnassignedPhotos(for: instance) }
+                }
+            }
+            .disabled(mutationsDisabled)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes all photos on this Meural account that do not belong to any album.")
+        }
         .sheet(item: $previewTarget) { target in
             PhotoLightboxView(
                 item: target.item,
@@ -327,6 +343,16 @@ struct GalleriesView: View {
                 }
                 .disabled(mutationsDisabled || !accountGalleryIDs.contains(gallery.id))
                 .help(accountGalleryIDs.contains(gallery.id) ? "Delete this album" : "Only account-owned albums can be deleted")
+            }
+
+            if let instance = selectedInstance, appState.hasCredentials(for: instance) {
+                Button {
+                    showingOrphanCleanupConfirmation = true
+                } label: {
+                    Label("Clean Up Unused", systemImage: "trash.slash")
+                }
+                .disabled(mutationsDisabled)
+                .help("Delete all photos on this Meural account that do not belong to any album")
             }
 
             Button {
@@ -711,6 +737,36 @@ struct GalleriesView: View {
             errorMessage = "Failed to delete album: \(error.localizedDescription)"
             preserveErrorOnNextReload = true
             galleriesRefreshToken += 1
+        }
+    }
+
+    private func cleanupUnassignedPhotos(for instance: InstanceConfig) async {
+        guard !mutationsDisabled else { return }
+        appState.isMutatingGalleries = true
+        errorMessage = nil
+        statusMessage = nil
+        defer { appState.isMutatingGalleries = false }
+
+        do {
+            let client = appState.makeMeuralClient(for: instance)
+            let result = try await client.deleteOrphanPhotos(
+                trackedItemIDs: nil,
+                protectedItemIDs: [],
+                allowEmptyGalleries: true
+            )
+            if !result.prunedItemIDs.isEmpty {
+                appState.recordManualItemsDeletion(result.prunedItemIDs, for: instance)
+            }
+            if result.deletedCount == 0 {
+                statusMessage = "No unassigned photos found on '\(instance.name)'."
+                appState.appendLog("Unassigned photo cleanup for \(instance.name): 0 photos found.")
+            } else {
+                let label = result.deletedCount == 1 ? "1 unassigned photo" : "\(result.deletedCount) unassigned photos"
+                statusMessage = "Deleted \(label) from '\(instance.name)'."
+                appState.appendLog("Manually deleted \(label) from \(instance.name).")
+            }
+        } catch {
+            errorMessage = "Failed to clean up unassigned photos: \(error.localizedDescription)"
         }
     }
 

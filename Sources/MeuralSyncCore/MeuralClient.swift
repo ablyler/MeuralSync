@@ -993,23 +993,29 @@ public actor MeuralClient {
     @discardableResult
     public func deleteOrphanPhotos(
         trackedItemIDs: Set<Int>? = nil,
-        protectedItemIDs: Set<Int> = []
+        protectedItemIDs: Set<Int> = [],
+        allowEmptyGalleries: Bool = false
     ) async throws -> OrphanCleanupResult {
         if let trackedItemIDs, trackedItemIDs.subtracting(protectedItemIDs).isEmpty {
             return OrphanCleanupResult(deletedCount: 0, prunedItemIDs: [])
         }
 
         let galleries = try await getGalleries()
-        if galleries.contains(where: { !$0.hasExplicitItemIds }) {
-            log("Skipping orphan cleanup: one or more galleries omitted itemIds (safety guard).")
-            return OrphanCleanupResult(deletedCount: 0, prunedItemIDs: [])
-        }
         var galleryItemIDs = Set<Int>()
         for gallery in galleries {
-            galleryItemIDs.formUnion(gallery.itemIds)
+            if gallery.hasExplicitItemIds {
+                galleryItemIDs.formUnion(gallery.itemIds)
+            } else if allowEmptyGalleries {
+                // Explicit manual cleanup: resolve omitted itemIds per gallery before deleting anything.
+                let items = try await getGalleryItems(galleryID: gallery.id)
+                galleryItemIDs.formUnion(items.map(\.id))
+            } else {
+                log("Skipping orphan cleanup: one or more galleries omitted itemIds (safety guard).")
+                return OrphanCleanupResult(deletedCount: 0, prunedItemIDs: [])
+            }
         }
 
-        if !galleries.isEmpty && galleryItemIDs.isEmpty {
+        if !allowEmptyGalleries && !galleries.isEmpty && galleryItemIDs.isEmpty {
             log("Skipping orphan cleanup: gallery list returned no itemIds (safety guard).")
             return OrphanCleanupResult(deletedCount: 0, prunedItemIDs: [])
         }
@@ -1018,17 +1024,22 @@ public actor MeuralClient {
         if let trackedItemIDs {
             candidateIDs = trackedItemIDs.subtracting(protectedItemIDs).sorted()
         } else {
-            guard !galleries.isEmpty else {
+            if !allowEmptyGalleries && galleries.isEmpty {
                 log("Skipping orphan cleanup: no galleries found (safety guard).")
                 return OrphanCleanupResult(deletedCount: 0, prunedItemIDs: [])
             }
             var allItemIDs: [Int] = []
+            var seenItemIDs = Set<Int>()
             var page = 1
             while page <= 200 {
                 let items = try await getItems(count: 100, page: page)
                 if items.isEmpty { break }
-                allItemIDs.append(contentsOf: items.map(\.id))
-                if items.count < 100 { break }
+                var addedAny = false
+                for item in items where seenItemIDs.insert(item.id).inserted {
+                    allItemIDs.append(item.id)
+                    addedAny = true
+                }
+                if !addedAny || items.count < 100 { break }
                 page += 1
             }
             candidateIDs = allItemIDs.filter { !protectedItemIDs.contains($0) }

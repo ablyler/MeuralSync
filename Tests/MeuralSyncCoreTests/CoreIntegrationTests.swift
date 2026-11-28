@@ -1119,4 +1119,40 @@ struct CoreIntegrationTests {
         #expect(Set(deletedItems) == Set([501, 502]))
         #expect(result.skippedOrphanCleanup == false)
     }
+
+    @Test("Manual unassigned-photo cleanup resolves omitted gallery itemIds and deletes only unassigned account photos")
+    func manualUnassignedPhotoCleanup() async throws {
+        let store = InMemoryCredentialStore()
+        try store.setCredentials(MeuralCredentials(email: "u@example.com", password: "pw"), for: "inst-unassigned")
+
+        var deletedItems: [Int] = []
+        let transport = MockTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            let method = request.httpMethod ?? "GET"
+            if url.contains("cognito-idp") {
+                return (Data(#"{"AuthenticationResult":{"AccessToken":"tok"}}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/galleries") {
+                // Gallery 10 has explicit itemIds [100]; Gallery 20 omits itemIds (resolved via /galleries/20/items -> [200])
+                return (Data(#"{"data":[{"id":10,"name":"Album A","itemIds":[100]},{"id":20,"name":"Album B"}]}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/galleries/20/items") {
+                return (Data(#"{"data":[{"id":200}]}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/items") {
+                return (Data(#"{"data":[{"id":100},{"id":200},{"id":300},{"id":400}]}"#.utf8), 200)
+            }
+            if method == "DELETE" && url.contains("/items/") {
+                if let id = Int(url.split(separator: "/").last ?? "") { deletedItems.append(id) }
+                return (Data(#"{}"#.utf8), 200)
+            }
+            return (Data(#"{"data":[]}"#.utf8), 200)
+        }
+
+        let client = MeuralClient(instanceName: "inst-unassigned", credentialStore: store, transport: transport, sleepHandler: { _ in })
+        let result = try await client.deleteOrphanPhotos(trackedItemIDs: nil, protectedItemIDs: [], allowEmptyGalleries: true)
+        #expect(result.deletedCount == 2)
+        #expect(Set(deletedItems) == Set([300, 400]))
+        #expect(result.prunedItemIDs == Set([300, 400]))
+    }
 }

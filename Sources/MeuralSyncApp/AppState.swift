@@ -389,6 +389,10 @@ final class AppState {
         syncStateStore.removeItemIDs([itemID], for: instance.storageKey)
     }
 
+    func recordManualItemsDeletion(_ itemIDs: Set<Int>, for instance: InstanceConfig) {
+        syncStateStore.removeItemIDs(itemIDs, for: instance.storageKey)
+    }
+
     func recordFailedDevicePush(galleryID: Int, galleryName: String, errorMessage: String, for instance: InstanceConfig) {
         syncStateStore.setPendingDevicePush(
             PendingDevicePush(galleryID: galleryID, galleryName: galleryName, errorMessage: errorMessage),
