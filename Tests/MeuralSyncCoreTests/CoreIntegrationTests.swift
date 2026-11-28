@@ -1140,7 +1140,7 @@ struct CoreIntegrationTests {
                 return (Data(#"{"data":[{"id":200}]}"#.utf8), 200)
             }
             if method == "GET" && url.contains("/user/items") {
-                return (Data(#"{"data":[{"id":100},{"id":200},{"id":300},{"id":400}]}"#.utf8), 200)
+                return (Data(#"{"data":[{"id":100,"fileSize":1000000},{"id":200,"fileSize":2000000},{"id":300,"fileSize":1500000},{"id":400,"fileSize":2500000}]}"#.utf8), 200)
             }
             if method == "DELETE" && url.contains("/items/") {
                 if let id = Int(url.split(separator: "/").last ?? "") { deletedItems.append(id) }
@@ -1150,6 +1150,12 @@ struct CoreIntegrationTests {
         }
 
         let client = MeuralClient(instanceName: "inst-unassigned", credentialStore: store, transport: transport, sleepHandler: { _ in })
+        let summary = try await client.getUnassignedItemsSummary()
+        #expect(summary.count == 2)
+        #expect(summary.totalBytes == 4_000_000)
+        #expect(summary.isEstimated == false)
+        #expect(summary.formattedSize != nil)
+
         let result = try await client.deleteOrphanPhotos(trackedItemIDs: nil, protectedItemIDs: [], allowEmptyGalleries: true)
         #expect(result.deletedCount == 2)
         #expect(Set(deletedItems) == Set([300, 400]))

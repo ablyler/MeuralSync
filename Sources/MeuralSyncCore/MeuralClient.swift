@@ -252,12 +252,20 @@ public struct MeuralItem: Codable, Sendable, Equatable, Identifiable {
     public let name: String?
     public let imageURL: URL?
     public let thumbnailURL: URL?
+    public let fileSizeBytes: Int64?
 
-    public init(id: Int, name: String? = nil, imageURL: URL? = nil, thumbnailURL: URL? = nil) {
+    public init(
+        id: Int,
+        name: String? = nil,
+        imageURL: URL? = nil,
+        thumbnailURL: URL? = nil,
+        fileSizeBytes: Int64? = nil
+    ) {
         self.id = id
         self.name = name
         self.imageURL = imageURL
         self.thumbnailURL = thumbnailURL
+        self.fileSizeBytes = fileSizeBytes
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -271,6 +279,12 @@ public struct MeuralItem: Codable, Sendable, Equatable, Identifiable {
         case thumbnail
         case smallImage
         case mediumImage
+        case fileSize
+        case fileSizeSnake = "file_size"
+        case size
+        case imageSize
+        case imageSizeSnake = "image_size"
+        case bytes
     }
 
     public init(from decoder: Decoder) throws {
@@ -285,6 +299,18 @@ public struct MeuralItem: Codable, Sendable, Equatable, Identifiable {
         func validURL(_ key: CodingKeys) -> URL? {
             nonEmpty(key).flatMap(URL.init(string:))
         }
+        func positiveInt64(_ key: CodingKeys) -> Int64? {
+            if let v = (try? container.decodeIfPresent(Int64.self, forKey: key)) ?? nil, v > 0 {
+                return v
+            }
+            if let v = (try? container.decodeIfPresent(Double.self, forKey: key)) ?? nil, v > 0 {
+                return Int64(v)
+            }
+            if let s = nonEmpty(key), let v = Int64(s), v > 0 {
+                return v
+            }
+            return nil
+        }
 
         self.name = nonEmpty(.name) ?? nonEmpty(.title)
         self.imageURL = validURL(.image)
@@ -295,6 +321,12 @@ public struct MeuralItem: Codable, Sendable, Equatable, Identifiable {
             ?? validURL(.smallImage)
             ?? validURL(.mediumImage)
             ?? self.imageURL
+        self.fileSizeBytes = positiveInt64(.fileSize)
+            ?? positiveInt64(.fileSizeSnake)
+            ?? positiveInt64(.imageSize)
+            ?? positiveInt64(.imageSizeSnake)
+            ?? positiveInt64(.size)
+            ?? positiveInt64(.bytes)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -303,6 +335,25 @@ public struct MeuralItem: Codable, Sendable, Equatable, Identifiable {
         try container.encodeIfPresent(name, forKey: .name)
         try container.encodeIfPresent(imageURL?.absoluteString, forKey: .image)
         try container.encodeIfPresent(thumbnailURL?.absoluteString, forKey: .thumbnail)
+        try container.encodeIfPresent(fileSizeBytes, forKey: .fileSize)
+    }
+}
+
+public struct UnassignedItemsSummary: Sendable, Equatable {
+    public let count: Int
+    public let totalBytes: Int64?
+    public let isEstimated: Bool
+
+    public init(count: Int, totalBytes: Int64?, isEstimated: Bool = false) {
+        self.count = count
+        self.totalBytes = totalBytes
+        self.isEstimated = isEstimated
+    }
+
+    public var formattedSize: String? {
+        guard let totalBytes, totalBytes > 0 else { return nil }
+        let formatted = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        return isEstimated ? "~\(formatted)" : formatted
     }
 }
 
@@ -984,6 +1035,130 @@ public actor MeuralClient {
             }
         }
         return oldIDs
+    }
+
+    /// Computes how many items on the Meural account are not part of any album and their total size.
+    /// Uses `fileSizeBytes` from the API payload when available, falling back to lightweight `HEAD`
+    /// `Content-Length` checks (sampled if > 40 items) when the API omits file sizes.
+    public func getUnassignedItemsSummary(
+        knownGalleries: [MeuralGallery]? = nil
+    ) async throws -> UnassignedItemsSummary {
+        let galleries: [MeuralGallery]
+        if let knownGalleries {
+            galleries = knownGalleries
+        } else {
+            galleries = try await getGalleries()
+        }
+
+        var galleryItemIDs = Set<Int>()
+        for gallery in galleries {
+            if gallery.hasExplicitItemIds {
+                galleryItemIDs.formUnion(gallery.itemIds)
+            } else {
+                let items = try await getGalleryItems(galleryID: gallery.id)
+                galleryItemIDs.formUnion(items.map(\.id))
+            }
+        }
+
+        var unassigned: [MeuralItem] = []
+        var seenItemIDs = Set<Int>()
+        var page = 1
+        while page <= 200 {
+            try Task.checkCancellation()
+            let items = try await getItems(count: 100, page: page)
+            if items.isEmpty { break }
+            var addedAny = false
+            for item in items where seenItemIDs.insert(item.id).inserted {
+                addedAny = true
+                if !galleryItemIDs.contains(item.id) {
+                    unassigned.append(item)
+                }
+            }
+            if !addedAny || items.count < 100 { break }
+            page += 1
+        }
+
+        guard !unassigned.isEmpty else {
+            return UnassignedItemsSummary(count: 0, totalBytes: 0)
+        }
+
+        let reportedSizes = unassigned.compactMap(\.fileSizeBytes)
+        if reportedSizes.count == unassigned.count {
+            return UnassignedItemsSummary(
+                count: unassigned.count,
+                totalBytes: reportedSizes.reduce(0, +),
+                isEstimated: false
+            )
+        } else if !reportedSizes.isEmpty {
+            let avg = Double(reportedSizes.reduce(0, +)) / Double(reportedSizes.count)
+            return UnassignedItemsSummary(
+                count: unassigned.count,
+                totalBytes: Int64((avg * Double(unassigned.count)).rounded()),
+                isEstimated: true
+            )
+        }
+
+        // Fallback: probe Content-Length via HEAD requests (exact up to 40 items, sampled if larger).
+        let urls = unassigned.compactMap(\.imageURL)
+        guard !urls.isEmpty else {
+            return UnassignedItemsSummary(count: unassigned.count, totalBytes: nil)
+        }
+        let maxDirectProbes = 40
+        let sampleURLs = urls.count <= maxDirectProbes ? urls : Array(urls.prefix(12))
+        let isSampled = sampleURLs.count < unassigned.count
+
+        let probedSizes: [Int64] = await withTaskGroup(of: Int64?.self) { group in
+            var results: [Int64] = []
+            var iterator = sampleURLs.makeIterator()
+            for _ in 0..<min(8, sampleURLs.count) {
+                if let url = iterator.next() {
+                    group.addTask { await Self.probeContentLength(url: url) }
+                }
+            }
+            while let size = await group.next() {
+                if let size, size > 0 { results.append(size) }
+                if let url = iterator.next() {
+                    group.addTask { await Self.probeContentLength(url: url) }
+                }
+            }
+            return results
+        }
+
+        guard !probedSizes.isEmpty else {
+            return UnassignedItemsSummary(count: unassigned.count, totalBytes: nil)
+        }
+        if !isSampled && probedSizes.count == unassigned.count {
+            return UnassignedItemsSummary(
+                count: unassigned.count,
+                totalBytes: probedSizes.reduce(0, +),
+                isEstimated: false
+            )
+        }
+        let avg = Double(probedSizes.reduce(0, +)) / Double(probedSizes.count)
+        return UnassignedItemsSummary(
+            count: unassigned.count,
+            totalBytes: Int64((avg * Double(unassigned.count)).rounded()),
+            isEstimated: true
+        )
+    }
+
+    private static func probeContentLength(url: URL) async -> Int64? {
+        var req = URLRequest(url: url)
+        req.httpMethod = "HEAD"
+        req.timeoutInterval = 5
+        guard let (_, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode)
+        else {
+            return nil
+        }
+        if http.expectedContentLength > 0 {
+            return http.expectedContentLength
+        }
+        if let raw = http.value(forHTTPHeaderField: "Content-Length"), let parsed = Int64(raw), parsed > 0 {
+            return parsed
+        }
+        return nil
     }
 
     /// Deletes orphan items that are no longer in any gallery.

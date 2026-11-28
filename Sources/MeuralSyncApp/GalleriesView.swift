@@ -63,6 +63,8 @@ struct GalleriesView: View {
     @State private var galleryPendingDelete: PendingGalleryDelete?
     @State private var itemPendingDelete: PendingItemDelete?
     @State private var showingOrphanCleanupConfirmation = false
+    @State private var unassignedSummary: UnassignedItemsSummary?
+    @State private var isLoadingUnassignedSummary = false
     @State private var previewTarget: LightboxTarget?
 
     private let gridColumns = [
@@ -93,6 +95,19 @@ struct GalleriesView: View {
 
     private var mutationsDisabled: Bool {
         appState.isMutatingGalleries || appState.isSyncing || appState.isRetryingDevicePush
+    }
+
+    private var cleanUpUnusedLabel: String {
+        guard let summary = unassignedSummary else {
+            return isLoadingUnassignedSummary ? "Clean Up Unused…" : "Clean Up Unused"
+        }
+        if summary.count == 0 {
+            return "Clean Up Unused (0)"
+        }
+        if let size = summary.formattedSize {
+            return "Clean Up Unused (\(summary.count) · \(size))"
+        }
+        return "Clean Up Unused (\(summary.count))"
     }
 
     var body: some View {
@@ -252,7 +267,16 @@ struct GalleriesView: View {
             .disabled(mutationsDisabled)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This permanently deletes all photos on this Meural account that do not belong to any album.")
+            if let summary = unassignedSummary, summary.count > 0 {
+                let itemWord = summary.count == 1 ? "1 unassigned photo" : "\(summary.count) unassigned photos"
+                if let size = summary.formattedSize {
+                    Text("This permanently deletes \(itemWord) (\(size)) on this Meural account that do not belong to any album.")
+                } else {
+                    Text("This permanently deletes \(itemWord) on this Meural account that do not belong to any album.")
+                }
+            } else {
+                Text("This permanently deletes all photos on this Meural account that do not belong to any album.")
+            }
         }
         .sheet(item: $previewTarget) { target in
             PhotoLightboxView(
@@ -349,9 +373,9 @@ struct GalleriesView: View {
                 Button {
                     showingOrphanCleanupConfirmation = true
                 } label: {
-                    Label("Clean Up Unused", systemImage: "trash.slash")
+                    Label(cleanUpUnusedLabel, systemImage: "trash.slash")
                 }
-                .disabled(mutationsDisabled)
+                .disabled(mutationsDisabled || (unassignedSummary?.count == 0))
                 .help("Delete all photos on this Meural account that do not belong to any album")
             }
 
@@ -516,6 +540,8 @@ struct GalleriesView: View {
         accountGalleryIDs = []
         deviceGalleryIDs = []
         activeGalleryIDs = []
+        unassignedSummary = nil
+        isLoadingUnassignedSummary = false
         deviceLookupError = nil
         detectedOrientation = nil
         items = []
@@ -606,6 +632,22 @@ struct GalleriesView: View {
                 selectedGalleryID = prev
             } else {
                 selectedGalleryID = displayedGalleries.first?.id
+            }
+
+            // Compute unassigned photo count & size in the background so the album list stays snappy.
+            isLoadingUnassignedSummary = true
+            Task {
+                defer {
+                    if generation == galleriesLoadGeneration {
+                        isLoadingUnassignedSummary = false
+                    }
+                }
+                if let summary = try? await client.getUnassignedItemsSummary(knownGalleries: fetched),
+                   generation == galleriesLoadGeneration,
+                   selectedInstance?.id == instanceID
+                {
+                    unassignedSummary = summary
+                }
             }
         } catch is CancellationError {
             // Cancelled due to instance switch or refresh.
@@ -758,9 +800,11 @@ struct GalleriesView: View {
                 appState.recordManualItemsDeletion(result.prunedItemIDs, for: instance)
             }
             if result.deletedCount == 0 {
+                unassignedSummary = UnassignedItemsSummary(count: 0, totalBytes: 0)
                 statusMessage = "No unassigned photos found on '\(instance.name)'."
                 appState.appendLog("Unassigned photo cleanup for \(instance.name): 0 photos found.")
             } else {
+                unassignedSummary = UnassignedItemsSummary(count: 0, totalBytes: 0)
                 let label = result.deletedCount == 1 ? "1 unassigned photo" : "\(result.deletedCount) unassigned photos"
                 statusMessage = "Deleted \(label) from '\(instance.name)'."
                 appState.appendLog("Manually deleted \(label) from \(instance.name).")
