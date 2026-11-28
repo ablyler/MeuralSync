@@ -162,6 +162,9 @@ private struct InstanceEditorView: View {
     @State private var excludePeopleText = ""
     @State private var testStatus: (message: String, isError: Bool, isSuccess: Bool)?
     @State private var isTesting = false
+    @State private var availableDevices: [MeuralDevice] = []
+    @State private var isLoadingDevices = false
+    @State private var devicesLoadError: String?
 
     var body: some View {
         Form {
@@ -169,6 +172,47 @@ private struct InstanceEditorView: View {
                 TextField("Instance Name", text: $instance.name)
                 Toggle("Enabled", isOn: $instance.enabled)
                 Toggle("Push & Switch Devices After Sync", isOn: $instance.sendToDevices)
+                    .onChange(of: instance.sendToDevices) { _, enabled in
+                        if enabled && availableDevices.isEmpty && appState.hasCredentials(for: instance) {
+                            loadDevices()
+                        }
+                    }
+                if instance.sendToDevices {
+                    HStack {
+                        Picker("Target Meural Frame", selection: $instance.deviceId) {
+                            Text("All Frames on Account").tag(Int?.none)
+                            ForEach(availableDevices) { device in
+                                Text(deviceDisplayLabel(device)).tag(Optional(device.id))
+                            }
+                            if let savedID = instance.deviceId,
+                               !availableDevices.contains(where: { $0.id == savedID })
+                            {
+                                Text("Frame #\(savedID)").tag(Optional(savedID))
+                            }
+                        }
+                        if isLoadingDevices {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button {
+                                loadDevices()
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(!appState.hasCredentials(for: instance))
+                            .help("Load Meural frames from this account")
+                        }
+                    }
+                    if let devicesLoadError {
+                        Text(devicesLoadError)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else if availableDevices.isEmpty && appState.hasCredentials(for: instance) && !isLoadingDevices {
+                        Text("Click refresh to load your Meural frames, or leave set to All Frames.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Picker("Frame Orientation", selection: $instance.frameOrientation) {
                     ForEach(FrameOrientation.allCases) { mode in
                         Text(mode.displayName).tag(mode)
@@ -196,6 +240,9 @@ private struct InstanceEditorView: View {
                         do {
                             try appState.saveCredentials(for: instance, email: email, password: password)
                             testStatus = ("Saved to macOS Keychain.", false, true)
+                            if instance.sendToDevices {
+                                loadDevices()
+                            }
                         } catch {
                             testStatus = (error.localizedDescription, true, false)
                         }
@@ -210,6 +257,9 @@ private struct InstanceEditorView: View {
                             switch res {
                             case .success(let count):
                                 testStatus = ("Connected! Found \(count) device(s).", false, true)
+                                if instance.sendToDevices {
+                                    loadDevices()
+                                }
                             case .failure(let err):
                                 testStatus = ("Failed: \(err.localizedDescription)", true, false)
                             }
@@ -319,6 +369,41 @@ private struct InstanceEditorView: View {
         testStatus = appState.hasCredentials(for: instance)
             ? ("Credentials stored in Keychain.", false, false)
             : nil
+        availableDevices = []
+        devicesLoadError = nil
+        if instance.sendToDevices && appState.hasCredentials(for: instance) {
+            loadDevices()
+        }
+    }
+
+    private func loadDevices() {
+        guard appState.hasCredentials(for: instance), !isLoadingDevices else { return }
+        let targetInstance = instance
+        isLoadingDevices = true
+        devicesLoadError = nil
+        Task {
+            do {
+                let fetched = try await appState.fetchDevices(for: targetInstance)
+                if instance.id == targetInstance.id {
+                    availableDevices = fetched
+                }
+            } catch {
+                if instance.id == targetInstance.id {
+                    devicesLoadError = "Could not load frames: \(error.localizedDescription)"
+                }
+            }
+            if instance.id == targetInstance.id {
+                isLoadingDevices = false
+            }
+        }
+    }
+
+    private func deviceDisplayLabel(_ device: MeuralDevice) -> String {
+        let name = device.alias?.isEmpty == false ? device.alias! : "Frame #\(device.id)"
+        if let orientation = device.parsedOrientation {
+            return "\(name) (\(orientation.displayName) · #\(device.id))"
+        }
+        return "\(name) (#\(device.id))"
     }
 
     private func appendPerson(_ person: String, to field: inout String) {

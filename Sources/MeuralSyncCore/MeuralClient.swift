@@ -601,12 +601,27 @@ public actor MeuralClient {
         }
     }
 
-    /// Sends `galleryID` to all Meural devices on the account (if not already present) and switches each frame to it.
-    /// Attempts every device even if one fails, then throws a combined error if any device failed.
+    /// Sends `galleryID` to matching Meural device(s) on the account (if not already present) and switches each frame to it.
+    /// When `targetDeviceID` is specified, only that device is updated; otherwise all devices on the account are updated.
+    /// Attempts every matched device even if one fails, then throws a combined error if any device failed.
     /// Returns the number of devices updated.
     @discardableResult
-    public func pushGalleryToDevices(galleryID: Int) async throws -> Int {
-        let devices = try await getDevices()
+    public func pushGalleryToDevices(galleryID: Int, targetDeviceID: Int? = nil) async throws -> Int {
+        let allDevices = try await getDevices()
+        let devices: [MeuralDevice]
+        if let targetDeviceID {
+            devices = allDevices.filter { $0.id == targetDeviceID }
+            if devices.isEmpty {
+                throw MeuralAPIError.httpError(
+                    statusCode: 404,
+                    method: "PUSH",
+                    url: "devices/\(targetDeviceID)",
+                    body: "Selected Meural frame (id: \(targetDeviceID)) not found on account"
+                )
+            }
+        } else {
+            devices = allDevices
+        }
         guard !devices.isEmpty else { return 0 }
         var failures: [String] = []
         for device in devices {

@@ -1161,4 +1161,56 @@ struct CoreIntegrationTests {
         #expect(Set(deletedItems) == Set([300, 400]))
         #expect(result.prunedItemIDs == Set([300, 400]))
     }
+
+    @Test("pushGalleryToDevices respects targetDeviceID and InstanceConfig persists device_id")
+    func targetDeviceSelection() async throws {
+        let cfg = InstanceConfig(name: "Hallway", sendToDevices: true, deviceId: 202)
+        let encoded = try JSONEncoder().encode(cfg)
+        let decoded = try JSONDecoder().decode(InstanceConfig.self, from: encoded)
+        #expect(decoded.deviceId == 202)
+
+        let legacy = try JSONDecoder().decode(InstanceConfig.self, from: Data(#"{"name":"Legacy"}"#.utf8))
+        #expect(legacy.deviceId == nil)
+
+        let store = InMemoryCredentialStore()
+        try store.setCredentials(MeuralCredentials(email: "u@example.com", password: "pw"), for: "inst-target")
+
+        var sentToDevices: [Int] = []
+        var switchedDevices: [Int] = []
+        let transport = MockTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            let method = request.httpMethod ?? "GET"
+            if url.contains("cognito-idp") {
+                return (Data(#"{"AuthenticationResult":{"AccessToken":"tok"}}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/devices") {
+                return (Data(#"{"data":[{"id":101,"alias":"Portrait Frame","galleryIds":[]},{"id":202,"alias":"Landscape Frame","galleryIds":[]}]}"#.utf8), 200)
+            }
+            if method == "POST" && url.contains("/galleries/99") {
+                if let devPart = url.components(separatedBy: "/devices/").last?.components(separatedBy: "/").first,
+                   let id = Int(devPart) {
+                    sentToDevices.append(id)
+                }
+                return (Data(#"{}"#.utf8), 200)
+            }
+            if method == "POST" && url.contains("/control/") {
+                if let devPart = url.components(separatedBy: "/devices/").last?.components(separatedBy: "/").first,
+                   let id = Int(devPart) {
+                    switchedDevices.append(id)
+                }
+                return (Data(#"{}"#.utf8), 200)
+            }
+            return (Data(#"{"data":[]}"#.utf8), 200)
+        }
+
+        let client = MeuralClient(instanceName: "inst-target", credentialStore: store, transport: transport, sleepHandler: { _ in })
+        let updated = try await client.pushGalleryToDevices(galleryID: 99, targetDeviceID: 202)
+        #expect(updated == 1)
+        #expect(sentToDevices == [202])
+        #expect(switchedDevices == [202])
+
+        await #expect(throws: MeuralAPIError.self) {
+            try await client.pushGalleryToDevices(galleryID: 99, targetDeviceID: 999)
+        }
+    }
 }

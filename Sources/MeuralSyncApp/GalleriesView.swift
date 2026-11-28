@@ -578,10 +578,11 @@ struct GalleriesView: View {
                 lookupFailure = "Failed to load frame info: \(error.localizedDescription)"
             }
 
+            let targetDevices = instance.deviceId.map { id in devices.filter { $0.id == id } } ?? devices
             var matchedIDs = Set<Int>()
             var activeIDs = Set<Int>()
             var extraGalleriesByID: [Int: MeuralGallery] = [:]
-            for device in devices {
+            for device in targetDevices {
                 if let ids = device.galleryIds {
                     matchedIDs.formUnion(ids)
                 }
@@ -627,7 +628,7 @@ struct GalleriesView: View {
             deviceGalleryIDs = matchedIDs
             activeGalleryIDs = activeIDs
             deviceLookupError = lookupFailure
-            detectedOrientation = devices.compactMap(\.parsedOrientation).first
+            detectedOrientation = targetDevices.compactMap(\.parsedOrientation).first
             if let prev = previousGalleryID, displayedGalleries.contains(where: { $0.id == prev }) {
                 selectedGalleryID = prev
             } else {
@@ -715,7 +716,10 @@ struct GalleriesView: View {
 
         do {
             let client = appState.makeMeuralClient(for: instance)
-            let count = try await client.pushGalleryToDevices(galleryID: gallery.id)
+            let count = try await client.pushGalleryToDevices(
+                galleryID: gallery.id,
+                targetDeviceID: instance.deviceId
+            )
             if count == 0 {
                 errorMessage = "No Meural frames found on '\(instance.name)'."
             } else {

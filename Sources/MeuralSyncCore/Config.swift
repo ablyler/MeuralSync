@@ -261,6 +261,9 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
     public var name: String
     public var enabled: Bool
     public var sendToDevices: Bool
+    /// Optional Meural device ID to target for orientation auto-detection, frame pushes, and Albums filtering.
+    /// `nil` targets all Meural frames on the account.
+    public var deviceId: Int?
     public var frameOrientation: FrameOrientation
     public var photoCount: Int
     public var photoScoreCurationMin: Double?
@@ -284,6 +287,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         case name
         case enabled
         case sendToDevices = "send_to_devices"
+        case deviceId = "device_id"
         case frameOrientation = "frame_orientation"
         case photoCount = "photo_count"
         case photoScoreCurationMin = "photo_score_curation_min"
@@ -305,6 +309,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         name: String,
         enabled: Bool = true,
         sendToDevices: Bool = true,
+        deviceId: Int? = nil,
         frameOrientation: FrameOrientation = .auto,
         photoCount: Int = 100,
         photoScoreCurationMin: Double? = 0.5,
@@ -324,6 +329,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         self.name = name
         self.enabled = enabled
         self.sendToDevices = sendToDevices
+        self.deviceId = deviceId
         self.frameOrientation = frameOrientation
         self.photoCount = max(1, min(1000, photoCount))
         self.photoScoreCurationMin = photoScoreCurationMin.map { max(0.0, min(1.0, $0)) }
@@ -346,6 +352,7 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         self.name = try container.decode(String.self, forKey: .name)
         self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         self.sendToDevices = try container.decodeIfPresent(Bool.self, forKey: .sendToDevices) ?? false
+        self.deviceId = try container.decodeIfPresent(Int.self, forKey: .deviceId)
         self.frameOrientation = try container.decodeIfPresent(FrameOrientation.self, forKey: .frameOrientation) ?? .auto
         let rawPhotoCount = try container.decodeIfPresent(Int.self, forKey: .photoCount) ?? 100
         self.photoCount = max(1, min(1000, rawPhotoCount))

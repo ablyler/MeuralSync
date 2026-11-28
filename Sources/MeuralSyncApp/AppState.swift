@@ -356,6 +356,11 @@ final class AppState {
         pendingPushVersion += 1
     }
 
+    func fetchDevices(for instance: InstanceConfig) async throws -> [MeuralDevice] {
+        let client = makeMeuralClient(for: instance)
+        return try await client.getDevices()
+    }
+
     func testConnection(for instance: InstanceConfig) async -> Result<Int, Error> {
         do {
             let client = makeMeuralClient(for: instance)
@@ -420,7 +425,10 @@ final class AppState {
             }
             do {
                 let client = self.makeMeuralClient(for: instance)
-                let count = try await client.pushGalleryToDevices(galleryID: pending.galleryID)
+                let count = try await client.pushGalleryToDevices(
+                    galleryID: pending.galleryID,
+                    targetDeviceID: instance.deviceId
+                )
                 guard count > 0 else {
                     throw MeuralAPIError.httpError(
                         statusCode: 0,

@@ -294,12 +294,13 @@ public actor SyncEngine {
         case .landscape:
             resolvedOrientation = .landscape
         case .auto:
-            let devices = try await client.getDevices()
-            let detectedOrientations = devices.compactMap(\.parsedOrientation)
+            let allDevices = try await client.getDevices()
+            let targetDevices = instance.deviceId.map { id in allDevices.filter { $0.id == id } } ?? allDevices
+            let detectedOrientations = targetDevices.compactMap(\.parsedOrientation)
             if let detected = detectedOrientations.first {
                 resolvedOrientation = detected
                 if Set(detectedOrientations).count > 1 {
-                    log("Warning: multiple frames with mixed orientations detected; using \(detected.displayName) (\(detected.canvasWidth)×\(detected.canvasHeight)). Override in Settings if needed.")
+                    log("Warning: multiple frames with mixed orientations detected; using \(detected.displayName) (\(detected.canvasWidth)×\(detected.canvasHeight)). Select a specific Target Frame or override Frame Orientation in Settings.")
                 } else {
                     log("Detected Meural frame orientation: \(detected.displayName) (\(detected.canvasWidth)×\(detected.canvasHeight))")
                 }
@@ -498,10 +499,16 @@ public actor SyncEngine {
             onProgress(SyncProgress(instanceName: instance.name, phase: "Sending gallery to Meural frames..."))
             var pushFailures: [String] = []
             do {
-                let devices = try await client.getDevices()
+                let allDevices = try await client.getDevices()
+                let devices = instance.deviceId.map { id in allDevices.filter { $0.id == id } } ?? allDevices
                 if devices.isEmpty {
-                    pushFailures.append("No Meural frames found on account")
-                    log("Warning: no Meural frames found on account to push gallery \(gallery.id).")
+                    if let targetID = instance.deviceId {
+                        pushFailures.append("Selected Meural frame (id: \(targetID)) not found on account")
+                        log("Warning: selected Meural frame (id: \(targetID)) not found on account to push gallery \(gallery.id).")
+                    } else {
+                        pushFailures.append("No Meural frames found on account")
+                        log("Warning: no Meural frames found on account to push gallery \(gallery.id).")
+                    }
                 }
                 for device in devices {
                     try Task.checkCancellation()
