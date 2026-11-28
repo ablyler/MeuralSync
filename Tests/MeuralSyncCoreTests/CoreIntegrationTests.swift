@@ -686,6 +686,60 @@ struct CoreIntegrationTests {
         #expect(decoded.minute == 30)
     }
 
+    @Test("Once-a-day schedule syncs once per allowed window, including all-day and overnight windows")
+    func onceADayScheduleWindows() throws {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        func at(_ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+            cal.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute))!
+        }
+
+        // All-day window (start == end): due at any time until a sync succeeds that calendar day.
+        let allDay = ScheduleConfig(enabled: true, frequency: .oncePerDay)
+        #expect(allDay.isAllDayWindow)
+        #expect(allDay.isDue(at: at(27, 0, 1), lastRun: nil, calendar: cal))
+        #expect(allDay.isDue(at: at(27, 10), lastRun: at(26, 23), calendar: cal))
+        #expect(!allDay.isDue(at: at(27, 23, 59), lastRun: at(27, 0, 5), calendar: cal))
+        #expect(allDay.nextRunDate(after: at(27, 10), lastRun: at(26, 9), calendar: cal) == at(27, 10))
+        #expect(allDay.nextRunDate(after: at(27, 10), lastRun: at(27, 9), calendar: cal) == at(28, 0))
+
+        // Daytime window 09:00–17:00.
+        let daytime = ScheduleConfig(
+            enabled: true, frequency: .oncePerDay,
+            windowStartHour: 9, windowStartMinute: 0, windowEndHour: 17, windowEndMinute: 0
+        )
+        #expect(!daytime.isDue(at: at(27, 8, 59), lastRun: nil, calendar: cal))
+        #expect(daytime.isDue(at: at(27, 9), lastRun: nil, calendar: cal))
+        #expect(!daytime.isDue(at: at(27, 17), lastRun: nil, calendar: cal))
+        // A sync before the window opened does not satisfy today's window.
+        #expect(daytime.isDue(at: at(27, 12), lastRun: at(27, 8), calendar: cal))
+        #expect(!daytime.isDue(at: at(27, 12), lastRun: at(27, 10), calendar: cal))
+        #expect(daytime.nextRunDate(after: at(27, 8), lastRun: nil, calendar: cal) == at(27, 9))
+        #expect(daytime.nextRunDate(after: at(27, 12), lastRun: at(27, 10), calendar: cal) == at(28, 9))
+        #expect(daytime.nextRunDate(after: at(27, 18), lastRun: nil, calendar: cal) == at(28, 9))
+
+        // Overnight window 22:00–06:00 belongs to the day it starts on.
+        let overnight = ScheduleConfig(
+            enabled: true, frequency: .oncePerDay,
+            windowStartHour: 22, windowStartMinute: 0, windowEndHour: 6, windowEndMinute: 0
+        )
+        #expect(overnight.syncWindow(containing: at(28, 2), calendar: cal) == DateInterval(start: at(27, 22), end: at(28, 6)))
+        #expect(overnight.isDue(at: at(28, 2), lastRun: at(27, 12), calendar: cal))
+        #expect(!overnight.isDue(at: at(28, 2), lastRun: at(27, 23), calendar: cal))
+        #expect(!overnight.isDue(at: at(28, 12), lastRun: nil, calendar: cal))
+        #expect(overnight.nextRunDate(after: at(28, 2), lastRun: at(27, 23), calendar: cal) == at(28, 22))
+
+        // Round-trips through JSON; legacy configs without window keys default to all day.
+        let decoded = try JSONDecoder().decode(ScheduleConfig.self, from: JSONEncoder().encode(daytime))
+        #expect(decoded == daytime)
+        let legacy = try JSONDecoder().decode(
+            ScheduleConfig.self,
+            from: Data(#"{"enabled":true,"frequency":"once_per_day"}"#.utf8)
+        )
+        #expect(legacy.frequency == .oncePerDay)
+        #expect(legacy.isAllDayWindow)
+    }
+
     @Test("SyncEngine records failed device pushes in SyncStateStore and clears them on success")
     func failedDevicePushTrackingAndClearing() async throws {
         // 1. Verify FileSyncStateStore backward-compatible decode + persistence of PendingDevicePush

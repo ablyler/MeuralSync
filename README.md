@@ -17,6 +17,7 @@ A native macOS menu bar app (Swift + SwiftUI) that syncs curated photos from you
   - Safe ownership-tracked gallery & orphan cleanup that protects user-owned albums and shared photos
   - macOS Keychain credential storage (`Security.framework`) keyed by stable instance UUID
 - **Flexible Scheduling, Wake Catch-Up & Launch at Login** (`SMAppService`)
+  - **Once a Day (Retry Until Synced)** mode: syncs at the first chance inside an optional allowed time window each day and retries hourly until it succeeds
 - **Auto-Updates via Sparkle 2** (EdDSA-verified GitHub Releases + `appcast.xml`)
 
 ## Requirements

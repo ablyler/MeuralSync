@@ -2,6 +2,11 @@
 
 All notable changes to **MeuralSync** are documented in this file.
 
+## v1.0.22
+
+- Added a **Once a Day (Retry Until Synced)** schedule frequency, ported from the osxphotos2meural launchd job: syncs at the first chance each day and retries every hour until a sync succeeds, with no retry cap. Any successful sync (manual or scheduled) counts toward the day.
+- Added **Allowed From / Allowed Until** times for this frequency to limit when syncing may run. Equal times allow the whole day, and an end earlier than the start wraps past midnight (for example, 22:00–06:00).
+
 ## v1.0.21
 
 - Hid the **On Frame / All** filter and skipped frame-specific badges (`Showing`, detected orientation) in **Meural Galleries** when the selected instance has no Meural frame linked, showing all account albums directly.

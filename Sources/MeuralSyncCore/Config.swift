@@ -15,6 +15,8 @@ public enum SyncFrequency: String, Codable, Sendable, CaseIterable, Identifiable
     case hourly
     case daily
     case weekly
+    /// Sync at the first opportunity inside each day's allowed window and retry hourly until one succeeds.
+    case oncePerDay = "once_per_day"
 
     public var id: String { rawValue }
 
@@ -23,6 +25,7 @@ public enum SyncFrequency: String, Codable, Sendable, CaseIterable, Identifiable
         case .hourly: return "Every N Hours"
         case .daily: return "Daily"
         case .weekly: return "Weekly"
+        case .oncePerDay: return "Once a Day (Retry Until Synced)"
         }
     }
 }
@@ -38,6 +41,16 @@ public struct ScheduleConfig: Codable, Sendable, Equatable {
     public var minute: Int
     /// Calendar weekday numbers (1 = Sunday ... 7 = Saturday), used when `frequency == .weekly`.
     public var weekdays: [Int]
+    /// Start of the allowed sync window, used when `frequency == .oncePerDay` (0...23 / 0...59).
+    public var windowStartHour: Int
+    public var windowStartMinute: Int
+    /// End of the allowed sync window (exclusive), used when `frequency == .oncePerDay`.
+    /// An end earlier than the start wraps past midnight; an end equal to the start allows the whole day.
+    public var windowEndHour: Int
+    public var windowEndMinute: Int
+
+    /// Fixed wait between failed attempts when `frequency == .oncePerDay`.
+    public static let oncePerDayRetryInterval: TimeInterval = 3600
 
     public init(
         enabled: Bool = true,
@@ -45,7 +58,11 @@ public struct ScheduleConfig: Codable, Sendable, Equatable {
         intervalHours: Int = 6,
         hour: Int = 12,
         minute: Int = 0,
-        weekdays: [Int] = [1, 2, 3, 4, 5, 6, 7]
+        weekdays: [Int] = [1, 2, 3, 4, 5, 6, 7],
+        windowStartHour: Int = 0,
+        windowStartMinute: Int = 0,
+        windowEndHour: Int = 0,
+        windowEndMinute: Int = 0
     ) {
         self.enabled = enabled
         self.frequency = frequency
@@ -53,6 +70,10 @@ public struct ScheduleConfig: Codable, Sendable, Equatable {
         self.hour = max(0, min(23, hour))
         self.minute = max(0, min(59, minute))
         self.weekdays = weekdays.isEmpty ? [1, 2, 3, 4, 5, 6, 7] : Array(Set(weekdays)).sorted()
+        self.windowStartHour = max(0, min(23, windowStartHour))
+        self.windowStartMinute = max(0, min(59, windowStartMinute))
+        self.windowEndHour = max(0, min(23, windowEndHour))
+        self.windowEndMinute = max(0, min(59, windowEndMinute))
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +85,50 @@ public struct ScheduleConfig: Codable, Sendable, Equatable {
         self.minute = max(0, min(59, try container.decodeIfPresent(Int.self, forKey: .minute) ?? 0))
         let decodedDays = try container.decodeIfPresent([Int].self, forKey: .weekdays) ?? [1, 2, 3, 4, 5, 6, 7]
         self.weekdays = decodedDays.isEmpty ? [1, 2, 3, 4, 5, 6, 7] : Array(Set(decodedDays)).sorted()
+        self.windowStartHour = max(0, min(23, try container.decodeIfPresent(Int.self, forKey: .windowStartHour) ?? 0))
+        self.windowStartMinute = max(0, min(59, try container.decodeIfPresent(Int.self, forKey: .windowStartMinute) ?? 0))
+        self.windowEndHour = max(0, min(23, try container.decodeIfPresent(Int.self, forKey: .windowEndHour) ?? 0))
+        self.windowEndMinute = max(0, min(59, try container.decodeIfPresent(Int.self, forKey: .windowEndMinute) ?? 0))
+    }
+
+    /// True when the window start equals its end, meaning syncing is allowed at any time of day.
+    public var isAllDayWindow: Bool {
+        windowStartHour == windowEndHour && windowStartMinute == windowEndMinute
+    }
+
+    /// The allowed sync window that contains `date`, if any. Windows that wrap past midnight
+    /// belong to the day they start on.
+    public func syncWindow(containing date: Date, calendar: Calendar = .current) -> DateInterval? {
+        guard let todayStart = windowStart(onDayOf: date, calendar: calendar) else { return nil }
+        for dayOffset in [0, -1] {
+            guard let start = calendar.date(byAdding: .day, value: dayOffset, to: todayStart),
+                  let end = windowEnd(forStart: start, calendar: calendar)
+            else { continue }
+            if start <= date && date < end {
+                return DateInterval(start: start, end: end)
+            }
+        }
+        return nil
+    }
+
+    private func windowStart(onDayOf date: Date, calendar: Calendar) -> Date? {
+        var comps = calendar.dateComponents([.year, .month, .day], from: date)
+        comps.hour = windowStartHour
+        comps.minute = windowStartMinute
+        comps.second = 0
+        return calendar.date(from: comps)
+    }
+
+    private func windowEnd(forStart start: Date, calendar: Calendar) -> Date? {
+        if isAllDayWindow {
+            return calendar.date(byAdding: .day, value: 1, to: start)
+        }
+        var comps = calendar.dateComponents([.year, .month, .day], from: start)
+        comps.hour = windowEndHour
+        comps.minute = windowEndMinute
+        comps.second = 0
+        guard let sameDayEnd = calendar.date(from: comps) else { return nil }
+        return sameDayEnd > start ? sameDayEnd : calendar.date(byAdding: .day, value: 1, to: sameDayEnd)
     }
 
     /// Computes the next scheduled sync date strictly after `referenceDate` (or based on `lastRun` for `.hourly`).
@@ -113,6 +178,17 @@ public struct ScheduleConfig: Codable, Sendable, Equatable {
                 }
             }
             return nil
+
+        case .oncePerDay:
+            if let window = syncWindow(containing: referenceDate, calendar: calendar),
+               lastRun.map({ $0 < window.start }) ?? true {
+                return referenceDate
+            }
+            guard let todayStart = windowStart(onDayOf: referenceDate, calendar: calendar) else { return nil }
+            if todayStart > referenceDate {
+                return todayStart
+            }
+            return calendar.date(byAdding: .day, value: 1, to: todayStart)
         }
     }
 
@@ -129,6 +205,12 @@ public struct ScheduleConfig: Codable, Sendable, Equatable {
             guard let lastRun else { return true }
             let interval = TimeInterval(max(1, intervalHours) * 3600)
             return now.timeIntervalSince(lastRun) >= interval
+
+        case .oncePerDay:
+            // Due whenever we are inside an allowed window that has not had a successful sync yet.
+            guard let window = syncWindow(containing: now, calendar: calendar) else { return false }
+            guard let lastRun else { return true }
+            return lastRun < window.start
 
         case .daily, .weekly:
             let validDays: Set<Int>
