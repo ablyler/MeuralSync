@@ -26,7 +26,7 @@ struct MeuralSyncApp: App {
         Window("Meural Galleries", id: "galleries") {
             GalleriesView(appState: appState)
         }
-        .defaultSize(width: 880, height: 600)
+        .defaultSize(width: 1020, height: 640)
 
         Window("MeuralSync Logs", id: "logs") {
             LogsView(appState: appState)

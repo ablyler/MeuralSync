@@ -292,107 +292,153 @@ struct GalleriesView: View {
     // MARK: - Subviews
 
     private var topBar: some View {
-        HStack(spacing: 10) {
-            if appState.config.instances.count > 1 {
-                Picker(
-                    "Account",
-                    selection: Binding(
-                        get: { selectedInstance?.id },
-                        set: { selectedInstanceID = $0 }
-                    )
-                ) {
-                    ForEach(appState.config.instances) { inst in
-                        Text(inst.name).tag(Optional(inst.id))
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 200)
-                .disabled(appState.isMutatingGalleries)
-            } else if let inst = selectedInstance {
-                Text(inst.name)
-                    .font(.headline)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                topBarFilters
+                Spacer(minLength: 8)
+                topBarProgress
+                topBarAlbumActions
+                topBarAccountActions
+                topBarRefreshButton
             }
 
-            Picker("Filter", selection: $showAllAccountAlbums) {
-                Text("On Frame").tag(false)
-                Text("All").tag(true)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 150)
-            .help("Show only albums loaded on your Meural frame, or all albums on the account")
-            .onChange(of: showAllAccountAlbums) { _, _ in
-                if let current = selectedGalleryID,
-                   !displayedGalleries.contains(where: { $0.id == current })
-                {
-                    selectedGalleryID = displayedGalleries.first?.id
-                } else if selectedGalleryID == nil {
-                    selectedGalleryID = displayedGalleries.first?.id
+            VStack(spacing: 6) {
+                HStack(spacing: 8) {
+                    topBarFilters
+                    Spacer(minLength: 8)
+                    topBarProgress
+                    topBarRefreshButton
+                }
+                HStack(spacing: 8) {
+                    topBarAlbumActions
+                    Spacer(minLength: 8)
+                    topBarAccountActions
                 }
             }
-
-            if let orientation = detectedOrientation {
-                Label(
-                    orientation.displayName,
-                    systemImage: orientation == .landscape ? "rectangle" : "rectangle.portrait"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(.secondary.opacity(0.12), in: Capsule())
-                .help("Detected Meural frame orientation")
-            }
-
-            Spacer()
-
-            if isLoadingGalleries || isLoadingItems || appState.isMutatingGalleries {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
-            if let instance = selectedInstance, let gallery = selectedGallery {
-                let hasTargetDevice = instance.deviceId != nil
-                Button {
-                    Task { await sendGalleryToDevice(instance: instance, gallery: gallery) }
-                } label: {
-                    Label("Send to Frame", systemImage: "tv.and.mediabox")
-                }
-                .disabled(mutationsDisabled || !hasTargetDevice)
-                .help(
-                    hasTargetDevice
-                        ? "Push and switch the configured Meural frame to this album"
-                        : "Select a Target Meural Frame for this instance in Settings to enable Send to Frame"
-                )
-
-                Button(role: .destructive) {
-                    galleryPendingDelete = PendingGalleryDelete(instance: instance, gallery: gallery)
-                } label: {
-                    Label("Delete Album", systemImage: "trash")
-                }
-                .disabled(mutationsDisabled || !accountGalleryIDs.contains(gallery.id))
-                .help(accountGalleryIDs.contains(gallery.id) ? "Delete this album" : "Only account-owned albums can be deleted")
-            }
-
-            if let instance = selectedInstance, appState.hasCredentials(for: instance) {
-                Button {
-                    showingOrphanCleanupConfirmation = true
-                } label: {
-                    Label(cleanUpUnusedLabel, systemImage: "trash.slash")
-                }
-                .disabled(mutationsDisabled || (unassignedSummary?.count == 0))
-                .help("Delete all photos on this Meural account that do not belong to any album")
-            }
-
-            Button {
-                galleriesRefreshToken += 1
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-            }
-            .disabled(isLoadingGalleries || isLoadingItems || appState.isMutatingGalleries)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+    }
+
+    @ViewBuilder
+    private var topBarFilters: some View {
+        if appState.config.instances.count > 1 {
+            Picker(
+                "Account",
+                selection: Binding(
+                    get: { selectedInstance?.id },
+                    set: { selectedInstanceID = $0 }
+                )
+            ) {
+                ForEach(appState.config.instances) { inst in
+                    Text(inst.name).tag(Optional(inst.id))
+                }
+            }
+            .labelsHidden()
+            .frame(minWidth: 120, maxWidth: 180)
+            .disabled(appState.isMutatingGalleries)
+        } else if let inst = selectedInstance {
+            Text(inst.name)
+                .font(.headline)
+                .lineLimit(1)
+                .fixedSize()
+        }
+
+        Picker("Filter", selection: $showAllAccountAlbums) {
+            Text("On Frame").tag(false)
+            Text("All").tag(true)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .help("Show only albums loaded on your Meural frame, or all albums on the account")
+        .onChange(of: showAllAccountAlbums) { _, _ in
+            if let current = selectedGalleryID,
+               !displayedGalleries.contains(where: { $0.id == current })
+            {
+                selectedGalleryID = displayedGalleries.first?.id
+            } else if selectedGalleryID == nil {
+                selectedGalleryID = displayedGalleries.first?.id
+            }
+        }
+
+        if let orientation = detectedOrientation {
+            Label(
+                orientation.displayName,
+                systemImage: orientation == .landscape ? "rectangle" : "rectangle.portrait"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.secondary.opacity(0.12), in: Capsule())
+            .fixedSize()
+            .help("Detected Meural frame orientation")
+        }
+    }
+
+    @ViewBuilder
+    private var topBarProgress: some View {
+        if isLoadingGalleries || isLoadingItems || appState.isMutatingGalleries {
+            ProgressView()
+                .controlSize(.small)
+        }
+    }
+
+    @ViewBuilder
+    private var topBarAlbumActions: some View {
+        if let instance = selectedInstance, let gallery = selectedGallery {
+            let hasTargetDevice = instance.deviceId != nil
+            Button {
+                Task { await sendGalleryToDevice(instance: instance, gallery: gallery) }
+            } label: {
+                Label("Send to Frame", systemImage: "tv.and.mediabox")
+                    .lineLimit(1)
+            }
+            .fixedSize()
+            .disabled(mutationsDisabled || !hasTargetDevice)
+            .help(
+                hasTargetDevice
+                    ? "Push and switch the configured Meural frame to this album"
+                    : "Select a Target Meural Frame for this instance in Settings to enable Send to Frame"
+            )
+
+            Button(role: .destructive) {
+                galleryPendingDelete = PendingGalleryDelete(instance: instance, gallery: gallery)
+            } label: {
+                Label("Delete Album", systemImage: "trash")
+                    .lineLimit(1)
+            }
+            .fixedSize()
+            .disabled(mutationsDisabled || !accountGalleryIDs.contains(gallery.id))
+            .help(accountGalleryIDs.contains(gallery.id) ? "Delete this album" : "Only account-owned albums can be deleted")
+        }
+    }
+
+    @ViewBuilder
+    private var topBarAccountActions: some View {
+        if let instance = selectedInstance, appState.hasCredentials(for: instance) {
+            Button {
+                showingOrphanCleanupConfirmation = true
+            } label: {
+                Label(cleanUpUnusedLabel, systemImage: "trash.slash")
+                    .lineLimit(1)
+            }
+            .fixedSize()
+            .disabled(mutationsDisabled || (unassignedSummary?.count == 0))
+            .help("Delete all photos on this Meural account that do not belong to any album")
+        }
+    }
+
+    private var topBarRefreshButton: some View {
+        Button {
+            galleriesRefreshToken += 1
+        } label: {
+            Label("Refresh", systemImage: "arrow.clockwise")
+                .lineLimit(1)
+        }
+        .fixedSize()
+        .disabled(isLoadingGalleries || isLoadingItems || appState.isMutatingGalleries)
     }
 
     private var galleriesSidebar: some View {
