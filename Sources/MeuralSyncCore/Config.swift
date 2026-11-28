@@ -337,6 +337,34 @@ public enum CaptionDateFormat: String, Codable, Sendable, CaseIterable, Identifi
     }
 }
 
+public enum GallerySyncMode: String, Codable, Sendable, CaseIterable, Identifiable {
+    case createAndDelete = "create_and_delete"
+    case updateExisting = "update_existing"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .createAndDelete: return "Create & Delete Gallery"
+        case .updateExisting: return "Update Existing Gallery"
+        }
+    }
+}
+
+public enum PhotoSelectionMode: String, Codable, Sendable, CaseIterable, Identifiable {
+    case people
+    case album
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .people: return "People"
+        case .album: return "Album"
+        }
+    }
+}
+
 public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID
 
@@ -347,6 +375,14 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
     /// `nil` targets all Meural frames on the account.
     public var deviceId: Int?
     public var frameOrientation: FrameOrientation
+    public var gallerySyncMode: GallerySyncMode
+    /// Target Meural gallery ID used when `gallerySyncMode == .updateExisting`.
+    public var targetGalleryId: Int?
+    public var photoSelectionMode: PhotoSelectionMode
+    /// Apple Photos album `localIdentifier` used when `photoSelectionMode == .album`.
+    public var sourceAlbumIdentifier: String?
+    /// Human-readable Apple Photos album name fallback used when `photoSelectionMode == .album`.
+    public var sourceAlbumName: String?
     public var photoCount: Int
     public var photoScoreCurationMin: Double?
     public var onThisDayPercent: Int?
@@ -371,6 +407,11 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         case sendToDevices = "send_to_devices"
         case deviceId = "device_id"
         case frameOrientation = "frame_orientation"
+        case gallerySyncMode = "gallery_sync_mode"
+        case targetGalleryId = "target_gallery_id"
+        case photoSelectionMode = "photo_selection_mode"
+        case sourceAlbumIdentifier = "source_album_identifier"
+        case sourceAlbumName = "source_album_name"
         case photoCount = "photo_count"
         case photoScoreCurationMin = "photo_score_curation_min"
         case onThisDayPercent = "on_this_day_percent"
@@ -393,6 +434,11 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         sendToDevices: Bool = true,
         deviceId: Int? = nil,
         frameOrientation: FrameOrientation = .auto,
+        gallerySyncMode: GallerySyncMode = .createAndDelete,
+        targetGalleryId: Int? = nil,
+        photoSelectionMode: PhotoSelectionMode = .people,
+        sourceAlbumIdentifier: String? = nil,
+        sourceAlbumName: String? = nil,
         photoCount: Int = 100,
         photoScoreCurationMin: Double? = 0.5,
         onThisDayPercent: Int? = 20,
@@ -413,6 +459,11 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         self.sendToDevices = sendToDevices
         self.deviceId = deviceId
         self.frameOrientation = frameOrientation
+        self.gallerySyncMode = gallerySyncMode
+        self.targetGalleryId = targetGalleryId
+        self.photoSelectionMode = photoSelectionMode
+        self.sourceAlbumIdentifier = sourceAlbumIdentifier
+        self.sourceAlbumName = sourceAlbumName
         self.photoCount = max(1, min(1000, photoCount))
         self.photoScoreCurationMin = photoScoreCurationMin.map { max(0.0, min(1.0, $0)) }
         self.onThisDayPercent = onThisDayPercent.map { max(0, min(100, $0)) }
@@ -436,6 +487,11 @@ public struct InstanceConfig: Codable, Sendable, Equatable, Identifiable {
         self.sendToDevices = try container.decodeIfPresent(Bool.self, forKey: .sendToDevices) ?? false
         self.deviceId = try container.decodeIfPresent(Int.self, forKey: .deviceId)
         self.frameOrientation = try container.decodeIfPresent(FrameOrientation.self, forKey: .frameOrientation) ?? .auto
+        self.gallerySyncMode = try container.decodeIfPresent(GallerySyncMode.self, forKey: .gallerySyncMode) ?? .createAndDelete
+        self.targetGalleryId = try container.decodeIfPresent(Int.self, forKey: .targetGalleryId)
+        self.photoSelectionMode = try container.decodeIfPresent(PhotoSelectionMode.self, forKey: .photoSelectionMode) ?? .people
+        self.sourceAlbumIdentifier = try container.decodeIfPresent(String.self, forKey: .sourceAlbumIdentifier)
+        self.sourceAlbumName = try container.decodeIfPresent(String.self, forKey: .sourceAlbumName)
         let rawPhotoCount = try container.decodeIfPresent(Int.self, forKey: .photoCount) ?? 100
         self.photoCount = max(1, min(1000, rawPhotoCount))
         self.photoScoreCurationMin = (try container.decodeIfPresent(Double.self, forKey: .photoScoreCurationMin))

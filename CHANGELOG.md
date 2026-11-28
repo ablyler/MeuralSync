@@ -6,6 +6,9 @@ All notable changes to **MeuralSync** are documented in this file.
 
 - Added a **Once a Day (Retry Until Synced)** schedule frequency, ported from the osxphotos2meural launchd job: syncs at the first chance each day and retries every hour until a sync succeeds, with no retry cap. Any successful sync (manual or scheduled) counts toward the day.
 - Added **Allowed From / Allowed Until** times for this frequency to limit when syncing may run. Equal times allow the whole day, and an end earlier than the start wraps past midnight (for example, 22:00–06:00).
+- Added **Gallery Mode** per instance: choose between **Create & Delete Gallery** (rolling galleries) or **Update Existing Gallery** (replaces photos in a chosen Meural gallery without deleting it).
+- Added **Photo Selection Mode** per instance: choose between **People** filtering or syncing directly from an Apple Photos **Album**.
+- Made saved Keychain passwords unmistakable in Settings with a green **Saved** badge and clear prompt, and right-aligned all instance setting values.
 
 ## v1.0.21
 

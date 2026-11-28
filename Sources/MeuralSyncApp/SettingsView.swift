@@ -165,42 +165,53 @@ private struct InstanceEditorView: View {
     @State private var availableDevices: [MeuralDevice] = []
     @State private var isLoadingDevices = false
     @State private var devicesLoadError: String?
+    @State private var availableGalleries: [MeuralGallery] = []
+    @State private var isLoadingGalleries = false
+    @State private var galleriesLoadError: String?
+
+    private var hasSavedCredentials: Bool {
+        appState.hasCredentials(for: instance)
+    }
 
     var body: some View {
         Form {
             Section("General") {
                 TextField("Instance Name", text: $instance.name)
+                    .multilineTextAlignment(.trailing)
                 Toggle("Enabled", isOn: $instance.enabled)
                 Toggle("Push & Switch Devices After Sync", isOn: $instance.sendToDevices)
                     .onChange(of: instance.sendToDevices) { _, enabled in
-                        if enabled && availableDevices.isEmpty && appState.hasCredentials(for: instance) {
+                        if enabled && availableDevices.isEmpty && hasSavedCredentials {
                             loadDevices()
                         }
                     }
                 if instance.sendToDevices {
-                    HStack {
-                        Picker("Target Meural Frame", selection: $instance.deviceId) {
-                            Text("None (Select a Frame)").tag(Int?.none)
-                            ForEach(availableDevices) { device in
-                                Text(deviceDisplayLabel(device)).tag(Optional(device.id))
+                    LabeledContent("Target Meural Frame") {
+                        HStack(spacing: 6) {
+                            Picker("Target Meural Frame", selection: $instance.deviceId) {
+                                Text("None (Select a Frame)").tag(Int?.none)
+                                ForEach(availableDevices) { device in
+                                    Text(deviceDisplayLabel(device)).tag(Optional(device.id))
+                                }
+                                if let savedID = instance.deviceId,
+                                   !availableDevices.contains(where: { $0.id == savedID })
+                                {
+                                    Text("Frame #\(savedID)").tag(Optional(savedID))
+                                }
                             }
-                            if let savedID = instance.deviceId,
-                               !availableDevices.contains(where: { $0.id == savedID })
-                            {
-                                Text("Frame #\(savedID)").tag(Optional(savedID))
+                            .labelsHidden()
+                            if isLoadingDevices {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button {
+                                    loadDevices()
+                                } label: {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(!hasSavedCredentials)
+                                .help("Load Meural frames from this account")
                             }
-                        }
-                        if isLoadingDevices {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Button {
-                                loadDevices()
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                            }
-                            .buttonStyle(.borderless)
-                            .disabled(!appState.hasCredentials(for: instance))
-                            .help("Load Meural frames from this account")
                         }
                     }
                     if let devicesLoadError {
@@ -227,25 +238,107 @@ private struct InstanceEditorView: View {
                         Text(fmt.displayName).tag(fmt)
                     }
                 }
-                TextField("Gallery Name Template (:date:)", text: $instance.destinationAlbumName)
-                if MeuralClient.galleryTemplateRegex(for: instance.destinationAlbumName) == nil {
-                    Text("Template should include at least 3 static characters (e.g. \"Family Photos - :date:\") so old galleries can be identified safely.")
+                Picker("Gallery Mode", selection: $instance.gallerySyncMode) {
+                    ForEach(GallerySyncMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .onChange(of: instance.gallerySyncMode) { _, mode in
+                    if mode == .updateExisting && availableGalleries.isEmpty && hasSavedCredentials {
+                        loadGalleries()
+                    }
+                }
+
+                if instance.gallerySyncMode == .createAndDelete {
+                    TextField("Gallery Name Template (:date:)", text: $instance.destinationAlbumName)
+                        .multilineTextAlignment(.trailing)
+                    if MeuralClient.galleryTemplateRegex(for: instance.destinationAlbumName) == nil {
+                        Text("Template should include at least 3 static characters (e.g. \"Family Photos - :date:\") so old galleries can be identified safely.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    Toggle("Randomize Gallery Name Suffix", isOn: $instance.randomizeGalleryName)
+                } else {
+                    LabeledContent("Target Meural Gallery") {
+                        HStack(spacing: 6) {
+                            Picker("Target Meural Gallery", selection: $instance.targetGalleryId) {
+                                Text("None (Select a Gallery)").tag(Int?.none)
+                                ForEach(availableGalleries) { gallery in
+                                    Text("\(gallery.name) (#\(gallery.id))").tag(Optional(gallery.id))
+                                }
+                                if let savedID = instance.targetGalleryId,
+                                   !availableGalleries.contains(where: { $0.id == savedID })
+                                {
+                                    Text("Gallery #\(savedID)").tag(Optional(savedID))
+                                }
+                            }
+                            .labelsHidden()
+                            if isLoadingGalleries {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Button {
+                                    loadGalleries()
+                                } label: {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(!hasSavedCredentials)
+                                .help("Load Meural galleries from this account")
+                            }
+                        }
+                    }
+                    if let galleriesLoadError {
+                        Text(galleriesLoadError)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else if instance.targetGalleryId == nil && !isLoadingGalleries {
+                        Text(
+                            availableGalleries.isEmpty
+                                ? "Click refresh to load your Meural galleries and choose which gallery to update."
+                                : "Select an existing Meural gallery to replace its photos on each sync."
+                        )
                         .font(.caption)
                         .foregroundStyle(.orange)
+                    }
                 }
-                Toggle("Randomize Gallery Name Suffix", isOn: $instance.randomizeGalleryName)
             }
 
             Section("Meural Account (Keychain)") {
                 TextField("Email", text: $email)
-                SecureField("Password", text: $password)
+                    .multilineTextAlignment(.trailing)
+                LabeledContent("Password") {
+                    HStack(spacing: 8) {
+                        SecureField(
+                            "",
+                            text: $password,
+                            prompt: Text(hasSavedCredentials ? "Enter new password to replace" : "Enter password")
+                        )
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
+
+                        if hasSavedCredentials && password.isEmpty {
+                            Label("Saved", systemImage: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Color.green.opacity(0.14), in: Capsule())
+                                .fixedSize()
+                                .help("Password is stored securely in macOS Keychain")
+                        }
+                    }
+                }
                 HStack {
                     Button("Save Credentials") {
                         do {
                             try appState.saveCredentials(for: instance, email: email, password: password)
+                            password = ""
                             testStatus = ("Saved to macOS Keychain.", false, true)
                             if instance.sendToDevices {
                                 loadDevices()
+                            }
+                            if instance.gallerySyncMode == .updateExisting {
+                                loadGalleries()
                             }
                         } catch {
                             testStatus = (error.localizedDescription, true, false)
@@ -264,13 +357,16 @@ private struct InstanceEditorView: View {
                                 if instance.sendToDevices {
                                     loadDevices()
                                 }
+                                if instance.gallerySyncMode == .updateExisting {
+                                    loadGalleries()
+                                }
                             case .failure(let err):
                                 testStatus = ("Failed: \(err.localizedDescription)", true, false)
                             }
                             isTesting = false
                         }
                     }
-                    .disabled(isTesting || !appState.hasCredentials(for: instance))
+                    .disabled(isTesting || !hasSavedCredentials)
 
                     if isTesting {
                         ProgressView().controlSize(.small)
@@ -284,69 +380,155 @@ private struct InstanceEditorView: View {
             }
 
             Section("Photo Selection") {
-                Stepper("Photo Count: \(instance.photoCount)", value: $instance.photoCount, in: 1...500, step: 5)
-                HStack {
-                    Text("Min Curation Score")
-                    Slider(
-                        value: Binding(
-                            get: { instance.photoScoreCurationMin ?? 0.5 },
-                            set: { instance.photoScoreCurationMin = $0 }
-                        ),
-                        in: 0...1,
-                        step: 0.05
-                    )
-                    Text(String(format: "%.2f", instance.photoScoreCurationMin ?? 0.5))
-                        .monospacedDigit()
-                        .frame(width: 38, alignment: .trailing)
-                }
-
-                HStack {
-                    TextField("Include People (comma-separated)", text: $includePeopleText)
-                    if !appState.availablePeople.isEmpty {
-                        Menu("Add") {
-                            ForEach(appState.availablePeople, id: \.self) { person in
-                                Button(person) {
-                                    appendPerson(person, to: &includePeopleText)
-                                }
-                            }
-                        }
-                        .fixedSize()
+                Picker("Selection Mode", selection: $instance.photoSelectionMode) {
+                    ForEach(PhotoSelectionMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
                     }
                 }
 
-                HStack {
-                    TextField("Exclude People (comma-separated)", text: $excludePeopleText)
-                    if !appState.availablePeople.isEmpty {
-                        Menu("Add") {
-                            ForEach(appState.availablePeople, id: \.self) { person in
-                                Button(person) {
-                                    appendPerson(person, to: &excludePeopleText)
+                LabeledContent("Photo Count") {
+                    HStack(spacing: 6) {
+                        Text("\(instance.photoCount)")
+                            .monospacedDigit()
+                        Stepper("", value: $instance.photoCount, in: 1...500, step: 5)
+                            .labelsHidden()
+                    }
+                }
+
+                LabeledContent("Min Curation Score") {
+                    HStack(spacing: 8) {
+                        Slider(
+                            value: Binding(
+                                get: { instance.photoScoreCurationMin ?? 0.5 },
+                                set: { instance.photoScoreCurationMin = $0 }
+                            ),
+                            in: 0...1,
+                            step: 0.05
+                        )
+                        .frame(maxWidth: 180)
+                        Text(String(format: "%.2f", instance.photoScoreCurationMin ?? 0.5))
+                            .monospacedDigit()
+                            .frame(width: 38, alignment: .trailing)
+                    }
+                }
+
+                if instance.photoSelectionMode == .people {
+                    LabeledContent("Include People") {
+                        HStack(spacing: 6) {
+                            TextField("", text: $includePeopleText, prompt: Text("Comma-separated"))
+                                .labelsHidden()
+                                .multilineTextAlignment(.trailing)
+                            if !appState.availablePeople.isEmpty {
+                                Menu("Add") {
+                                    ForEach(appState.availablePeople, id: \.self) { person in
+                                        Button(person) {
+                                            appendPerson(person, to: &includePeopleText)
+                                        }
+                                    }
                                 }
+                                .fixedSize()
                             }
                         }
-                        .fixedSize()
+                    }
+
+                    LabeledContent("Exclude People") {
+                        HStack(spacing: 6) {
+                            TextField("", text: $excludePeopleText, prompt: Text("Comma-separated"))
+                                .labelsHidden()
+                                .multilineTextAlignment(.trailing)
+                            if !appState.availablePeople.isEmpty {
+                                Menu("Add") {
+                                    ForEach(appState.availablePeople, id: \.self) { person in
+                                        Button(person) {
+                                            appendPerson(person, to: &excludePeopleText)
+                                        }
+                                    }
+                                }
+                                .fixedSize()
+                            }
+                        }
+                    }
+                } else {
+                    LabeledContent("Photos Album") {
+                        HStack(spacing: 6) {
+                            Picker(
+                                "Photos Album",
+                                selection: Binding<String?>(
+                                    get: { instance.sourceAlbumIdentifier },
+                                    set: { newID in
+                                        instance.sourceAlbumIdentifier = newID
+                                        if let newID,
+                                           let album = appState.availableAlbums.first(where: { $0.id == newID })
+                                        {
+                                            instance.sourceAlbumName = album.title
+                                        } else if newID == nil {
+                                            instance.sourceAlbumName = nil
+                                        }
+                                    }
+                                )
+                            ) {
+                                Text("None (Select an Album)").tag(String?.none)
+                                ForEach(appState.availableAlbums) { album in
+                                    Text("\(album.title) (\(album.estimatedCount))").tag(Optional(album.id))
+                                }
+                                if let savedID = instance.sourceAlbumIdentifier,
+                                   !appState.availableAlbums.contains(where: { $0.id == savedID })
+                                {
+                                    Text(instance.sourceAlbumName ?? savedID).tag(Optional(savedID))
+                                }
+                            }
+                            .labelsHidden()
+
+                            Button {
+                                appState.refreshPermissions()
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Reload albums from Apple Photos")
+                        }
+                    }
+                    if instance.sourceAlbumIdentifier == nil && (instance.sourceAlbumName?.isEmpty ?? true) {
+                        Text(
+                            appState.availableAlbums.isEmpty
+                                ? "Grant Photos access or click refresh to load your Apple Photos albums."
+                                : "Select an Apple Photos album to sync photos from."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                     }
                 }
             }
 
             Section("On This Day") {
-                Stepper(
-                    "On This Day Percent: \(instance.onThisDayPercent ?? 0)%",
-                    value: Binding(
-                        get: { instance.onThisDayPercent ?? 0 },
-                        set: {
-                            instance.onThisDayPercent = $0
-                            instance.onThisDayCount = nil
-                        }
-                    ),
-                    in: 0...100,
-                    step: 5
-                )
-                Stepper(
-                    "Window: ±\(instance.onThisDayWindowDays) day(s)",
-                    value: $instance.onThisDayWindowDays,
-                    in: 0...14
-                )
+                LabeledContent("On This Day Percent") {
+                    HStack(spacing: 6) {
+                        Text("\(instance.onThisDayPercent ?? 0)%")
+                            .monospacedDigit()
+                        Stepper(
+                            "",
+                            value: Binding(
+                                get: { instance.onThisDayPercent ?? 0 },
+                                set: {
+                                    instance.onThisDayPercent = $0
+                                    instance.onThisDayCount = nil
+                                }
+                            ),
+                            in: 0...100,
+                            step: 5
+                        )
+                        .labelsHidden()
+                    }
+                }
+
+                LabeledContent("Window") {
+                    HStack(spacing: 6) {
+                        Text("±\(instance.onThisDayWindowDays) day(s)")
+                            .monospacedDigit()
+                        Stepper("", value: $instance.onThisDayWindowDays, in: 0...14)
+                            .labelsHidden()
+                    }
+                }
             }
         }
         .formStyle(.grouped)
@@ -370,18 +552,23 @@ private struct InstanceEditorView: View {
         password = ""
         includePeopleText = instance.people.include.joined(separator: ", ")
         excludePeopleText = instance.people.exclude.joined(separator: ", ")
-        testStatus = appState.hasCredentials(for: instance)
+        testStatus = hasSavedCredentials
             ? ("Credentials stored in Keychain.", false, false)
             : nil
         availableDevices = []
         devicesLoadError = nil
-        if instance.sendToDevices && appState.hasCredentials(for: instance) {
+        availableGalleries = []
+        galleriesLoadError = nil
+        if instance.sendToDevices && hasSavedCredentials {
             loadDevices()
+        }
+        if instance.gallerySyncMode == .updateExisting && hasSavedCredentials {
+            loadGalleries()
         }
     }
 
     private func loadDevices() {
-        guard appState.hasCredentials(for: instance), !isLoadingDevices else { return }
+        guard hasSavedCredentials, !isLoadingDevices else { return }
         let targetInstance = instance
         isLoadingDevices = true
         devicesLoadError = nil
@@ -401,6 +588,28 @@ private struct InstanceEditorView: View {
             }
             if instance.id == targetInstance.id {
                 isLoadingDevices = false
+            }
+        }
+    }
+
+    private func loadGalleries() {
+        guard hasSavedCredentials, !isLoadingGalleries else { return }
+        let targetInstance = instance
+        isLoadingGalleries = true
+        galleriesLoadError = nil
+        Task {
+            do {
+                let fetched = try await appState.fetchGalleries(for: targetInstance)
+                if instance.id == targetInstance.id {
+                    availableGalleries = fetched.sorted { $0.id > $1.id }
+                }
+            } catch {
+                if instance.id == targetInstance.id {
+                    galleriesLoadError = "Could not load galleries: \(error.localizedDescription)"
+                }
+            }
+            if instance.id == targetInstance.id {
+                isLoadingGalleries = false
             }
         }
     }

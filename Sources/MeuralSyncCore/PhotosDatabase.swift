@@ -24,6 +24,8 @@ public enum PhotosDatabaseError: Error, LocalizedError, Sendable {
 public struct PhotosQueryOptions: Sendable, Equatable {
     public var includePeople: [String]
     public var excludePeople: [String]
+    public var albumIdentifier: String?
+    public var albumName: String?
     public var curationScoreMin: Double?
     public var excludeScreenshots: Bool
     public var excludeMovies: Bool
@@ -32,6 +34,8 @@ public struct PhotosQueryOptions: Sendable, Equatable {
     public init(
         includePeople: [String] = [],
         excludePeople: [String] = [],
+        albumIdentifier: String? = nil,
+        albumName: String? = nil,
         curationScoreMin: Double? = nil,
         excludeScreenshots: Bool = true,
         excludeMovies: Bool = true,
@@ -39,6 +43,8 @@ public struct PhotosQueryOptions: Sendable, Equatable {
     ) {
         self.includePeople = includePeople
         self.excludePeople = excludePeople
+        self.albumIdentifier = albumIdentifier
+        self.albumName = albumName
         self.curationScoreMin = curationScoreMin
         self.excludeScreenshots = excludeScreenshots
         self.excludeMovies = excludeMovies

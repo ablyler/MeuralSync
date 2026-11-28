@@ -33,6 +33,7 @@ final class AppState {
     var hasFullDiskAccess = false
     var launchAtLoginEnabled = false
     var availablePeople: [String] = []
+    var availableAlbums: [PhotoAlbumInfo] = []
     private(set) var credentialsVersion = 0
     private(set) var pendingPushVersion = 0
     var retryingPushInstanceIDs: Set<String> = []
@@ -69,7 +70,7 @@ final class AppState {
         guard !hasFullDiskAccess else { return false }
         return config.instances
             .filter(\.enabled)
-            .contains { !$0.people.include.isEmpty || !$0.people.exclude.isEmpty }
+            .contains { $0.photoSelectionMode == .people && (!$0.people.include.isEmpty || !$0.people.exclude.isEmpty) }
     }
 
     struct PendingPushItem: Identifiable {
@@ -283,9 +284,16 @@ final class AppState {
             } else {
                 names = []
             }
+            let albums: [PhotoAlbumInfo]
+            if photoOK {
+                albums = (try? await library.fetchAllAlbums()) ?? []
+            } else {
+                albums = []
+            }
             await MainActor.run {
                 self.hasFullDiskAccess = fda
                 self.availablePeople = names
+                self.availableAlbums = albums
             }
         }
     }
@@ -378,6 +386,11 @@ final class AppState {
     func fetchDevices(for instance: InstanceConfig) async throws -> [MeuralDevice] {
         let client = makeMeuralClient(for: instance)
         return try await client.getDevices()
+    }
+
+    func fetchGalleries(for instance: InstanceConfig) async throws -> [MeuralGallery] {
+        let client = makeMeuralClient(for: instance)
+        return try await client.getGalleries()
     }
 
     func testConnection(for instance: InstanceConfig) async -> Result<Int, Error> {

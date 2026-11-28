@@ -25,6 +25,9 @@ public struct SyncProgress: Sendable, Equatable {
 public enum SyncError: Error, LocalizedError, Sendable {
     case alreadyRunning
     case missingCredentials([String])
+    case missingTargetGallery(String)
+    case targetGalleryNotFound(String, Int)
+    case missingSourceAlbum(String)
     case noPhotosUploaded(String)
     case tooManyUploadFailures(Int)
     case multipleInstanceFailures([(instanceName: String, message: String)])
@@ -35,6 +38,12 @@ public enum SyncError: Error, LocalizedError, Sendable {
             return "A sync is already in progress."
         case .missingCredentials(let names):
             return "Missing Meural credentials for: \(names.joined(separator: ", "))"
+        case .missingTargetGallery(let instanceName):
+            return "No target Meural gallery is selected for '\(instanceName)'. Choose a gallery in Settings or switch to Create & Delete Gallery mode."
+        case .targetGalleryNotFound(let instanceName, let galleryID):
+            return "Target Meural gallery #\(galleryID) for '\(instanceName)' was not found on the account."
+        case .missingSourceAlbum(let instanceName):
+            return "No Apple Photos album is selected for '\(instanceName)'. Choose an album in Settings or switch to People selection mode."
         case .noPhotosUploaded(let instanceName):
             return "No photos were uploaded for '\(instanceName)'. Existing galleries and frames were left unchanged."
         case .tooManyUploadFailures(let count):
@@ -245,14 +254,34 @@ public actor SyncEngine {
         log("Starting sync...")
         onProgress(SyncProgress(instanceName: instance.name, phase: "Querying Photos library..."))
 
-        let queryOptions = PhotosQueryOptions(
-            includePeople: instance.people.include,
-            excludePeople: instance.people.exclude,
-            curationScoreMin: instance.photoScoreCurationMin,
-            excludeScreenshots: true,
-            excludeMovies: true,
-            excludeHidden: true
-        )
+        let queryOptions: PhotosQueryOptions
+        switch instance.photoSelectionMode {
+        case .people:
+            queryOptions = PhotosQueryOptions(
+                includePeople: instance.people.include,
+                excludePeople: instance.people.exclude,
+                curationScoreMin: instance.photoScoreCurationMin,
+                excludeScreenshots: true,
+                excludeMovies: true,
+                excludeHidden: true
+            )
+        case .album:
+            let hasAlbumID = !(instance.sourceAlbumIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            let hasAlbumName = !(instance.sourceAlbumName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            guard hasAlbumID || hasAlbumName else {
+                throw SyncError.missingSourceAlbum(instance.name)
+            }
+            queryOptions = PhotosQueryOptions(
+                includePeople: [],
+                excludePeople: [],
+                albumIdentifier: instance.sourceAlbumIdentifier,
+                albumName: instance.sourceAlbumName,
+                curationScoreMin: instance.photoScoreCurationMin,
+                excludeScreenshots: true,
+                excludeMovies: true,
+                excludeHidden: true
+            )
+        }
         let allMatching = try await photoLibrary.queryPhotos(options: queryOptions)
         log("Found \(allMatching.count) matching photos")
 
@@ -310,17 +339,42 @@ public actor SyncEngine {
             }
         }
 
-        let galleryName = Self.buildGalleryName(
-            template: instance.destinationAlbumName,
-            randomize: instance.randomizeGalleryName
-        )
-        let gallery = try await client.getOrCreateGallery(
-            name: galleryName,
-            orientation: resolvedOrientation.meuralAPIOrientation
-        )
-        stateStore.recordGalleryID(gallery.id, for: stateKey)
-        let existingItemIDs = gallery.itemIds
-        log("Using gallery '\(gallery.name)' (id: \(gallery.id), orientation: \(resolvedOrientation.meuralAPIOrientation))")
+        let gallery: MeuralGallery
+        let existingItemIDs: [Int]
+        switch instance.gallerySyncMode {
+        case .createAndDelete:
+            let galleryName = Self.buildGalleryName(
+                template: instance.destinationAlbumName,
+                randomize: instance.randomizeGalleryName
+            )
+            gallery = try await client.getOrCreateGallery(
+                name: galleryName,
+                orientation: resolvedOrientation.meuralAPIOrientation
+            )
+            stateStore.recordGalleryID(gallery.id, for: stateKey)
+            if gallery.hasExplicitItemIds {
+                existingItemIDs = gallery.itemIds
+            } else {
+                existingItemIDs = (try? await client.getGalleryItems(galleryID: gallery.id).map(\.id)) ?? []
+            }
+            log("Using gallery '\(gallery.name)' (id: \(gallery.id), orientation: \(resolvedOrientation.meuralAPIOrientation))")
+
+        case .updateExisting:
+            guard let targetID = instance.targetGalleryId else {
+                throw SyncError.missingTargetGallery(instance.name)
+            }
+            let accountGalleries = try await client.getGalleries()
+            guard let matched = accountGalleries.first(where: { $0.id == targetID }) else {
+                throw SyncError.targetGalleryNotFound(instance.name, targetID)
+            }
+            gallery = matched
+            if matched.hasExplicitItemIds {
+                existingItemIDs = matched.itemIds
+            } else {
+                existingItemIDs = try await client.getGalleryItems(galleryID: matched.id).map(\.id)
+            }
+            log("Updating existing gallery '\(gallery.name)' (id: \(gallery.id), existing items: \(existingItemIDs.count))")
+        }
 
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("MeuralSync-\(UUID().uuidString)", isDirectory: true)
@@ -572,10 +626,12 @@ public actor SyncEngine {
             stateStore.setPendingDevicePush(nil, for: stateKey)
         }
 
-        // Clean up old galleries created by this instance — skip if pushing to frames failed
-        // so an offline or full frame never loses the fallback album it is still displaying.
+        // Clean up old galleries created by this instance — skip in Update Existing Gallery mode,
+        // and skip if pushing to frames failed so an offline or full frame never loses its fallback album.
         try Task.checkCancellation()
-        if devicePushIncomplete {
+        if instance.gallerySyncMode == .updateExisting {
+            log("Skipping old-gallery cleanup in Update Existing Gallery mode.")
+        } else if devicePushIncomplete {
             log("Skipping old-gallery cleanup because pushing to frame(s) did not complete; previous albums preserved until next successful handoff.")
         } else {
             onProgress(SyncProgress(instanceName: instance.name, phase: "Cleaning up old galleries..."))

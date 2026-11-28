@@ -7,6 +7,7 @@ import Photos
 public enum PhotoLibraryMetadataError: Error, LocalizedError, Sendable {
     case peopleFilterUnavailable
     case curationFilterUnavailable
+    case albumNotFound(String)
 
     public var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ public enum PhotoLibraryMetadataError: Error, LocalizedError, Sendable {
             return "People filtering requires Full Disk Access (Apple restricts PhotoKit People access for third-party apps). Grant Full Disk Access in System Settings → Privacy & Security → Full Disk Access, or clear People filters to sync with PhotoKit only."
         case .curationFilterUnavailable:
             return "A minimum curation score filter is configured, but PhotoKit curation score metadata is unavailable on this version of macOS."
+        case .albumNotFound(let label):
+            return "Photos album '\(label)' could not be found in your Apple Photos library."
         }
     }
 }
@@ -60,6 +63,35 @@ public final class PhotoKitLibrary: PhotoLibraryProviding, @unchecked Sendable {
         return []
     }
 
+    /// Lists all user & shared albums in the System Photo Library (sorted alphabetically).
+    public func fetchAllAlbums() async throws -> [PhotoAlbumInfo] {
+        try requireAuthorized()
+        var albums: [PhotoAlbumInfo] = []
+        var seenIDs = Set<String>()
+
+        let collections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+        collections.enumerateObjects { collection, _, _ in
+            guard let title = collection.localizedTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !title.isEmpty,
+                  seenIDs.insert(collection.localIdentifier).inserted
+            else {
+                return
+            }
+            let count = collection.estimatedAssetCount == NSNotFound
+                ? PHAsset.fetchAssets(in: collection, options: nil).count
+                : collection.estimatedAssetCount
+            albums.append(
+                PhotoAlbumInfo(
+                    id: collection.localIdentifier,
+                    title: title,
+                    estimatedCount: count
+                )
+            )
+        }
+
+        return albums.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
     /// Fetches photos matching the given query options via PhotoKit.
     public func queryPhotos(options: PhotosQueryOptions) async throws -> [PhotoMetadata] {
         try requireAuthorized()
@@ -71,7 +103,32 @@ public final class PhotoKitLibrary: PhotoLibraryProviding, @unchecked Sendable {
         fetchOptions.includeAllBurstAssets = false
 
         let assetsResult: PHFetchResult<PHAsset>
-        if options.excludeMovies {
+        if let albumID = options.albumIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines), !albumID.isEmpty {
+            let matching = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [albumID], options: nil)
+            if let collection = matching.firstObject {
+                if options.excludeMovies {
+                    fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+                }
+                assetsResult = PHAsset.fetchAssets(in: collection, options: fetchOptions)
+            } else if let albumName = options.albumName?.trimmingCharacters(in: .whitespacesAndNewlines), !albumName.isEmpty,
+                      let collection = Self.findAlbum(named: albumName)
+            {
+                if options.excludeMovies {
+                    fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+                }
+                assetsResult = PHAsset.fetchAssets(in: collection, options: fetchOptions)
+            } else {
+                throw PhotoLibraryMetadataError.albumNotFound(options.albumName ?? albumID)
+            }
+        } else if let albumName = options.albumName?.trimmingCharacters(in: .whitespacesAndNewlines), !albumName.isEmpty {
+            guard let collection = Self.findAlbum(named: albumName) else {
+                throw PhotoLibraryMetadataError.albumNotFound(albumName)
+            }
+            if options.excludeMovies {
+                fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+            }
+            assetsResult = PHAsset.fetchAssets(in: collection, options: fetchOptions)
+        } else if options.excludeMovies {
             assetsResult = PHAsset.fetchAssets(with: .image, options: fetchOptions)
         } else {
             assetsResult = PHAsset.fetchAssets(with: fetchOptions)
@@ -180,6 +237,18 @@ public final class PhotoKitLibrary: PhotoLibraryProviding, @unchecked Sendable {
     /// Reverse-geocodes only the selected photos using a persistent on-disk coordinate cache.
     public func enrichLocations(for photos: [PhotoMetadata]) async -> [PhotoMetadata] {
         await geocoder.enrichLocations(for: photos)
+    }
+
+    private static func findAlbum(named title: String) -> PHAssetCollection? {
+        let collections = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: nil)
+        var match: PHAssetCollection?
+        collections.enumerateObjects { collection, _, stop in
+            if collection.localizedTitle?.compare(title, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
+                match = collection
+                stop.pointee = true
+            }
+        }
+        return match
     }
 
     // MARK: - Authorization

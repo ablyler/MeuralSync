@@ -1267,4 +1267,169 @@ struct CoreIntegrationTests {
             try await client.pushGalleryToDevices(galleryID: 99, targetDeviceID: 999)
         }
     }
+
+    @Test("Update Existing Gallery mode and Album photo selection mode persist and run safely")
+    func updateExistingGalleryAndAlbumSelectionMode() async throws {
+        // 1. Config persistence & legacy defaults
+        let cfg = InstanceConfig(
+            name: "Grandparents",
+            sendToDevices: false,
+            gallerySyncMode: .updateExisting,
+            targetGalleryId: 77,
+            photoSelectionMode: .album,
+            sourceAlbumIdentifier: "ALBUM-UUID/L0/040",
+            sourceAlbumName: "Favorites 2026",
+            photoCount: 1,
+            onThisDayPercent: 0,
+            people: PeopleFilter(include: ["ShouldBeIgnoredInAlbumMode"]),
+            uploadIntervalSeconds: 0
+        )
+        let encoded = try JSONEncoder().encode(cfg)
+        let decoded = try JSONDecoder().decode(InstanceConfig.self, from: encoded)
+        #expect(decoded.gallerySyncMode == .updateExisting)
+        #expect(decoded.targetGalleryId == 77)
+        #expect(decoded.photoSelectionMode == .album)
+        #expect(decoded.sourceAlbumIdentifier == "ALBUM-UUID/L0/040")
+        #expect(decoded.sourceAlbumName == "Favorites 2026")
+
+        let legacy = try JSONDecoder().decode(InstanceConfig.self, from: Data(#"{"name":"Legacy"}"#.utf8))
+        #expect(legacy.gallerySyncMode == .createAndDelete)
+        #expect(legacy.targetGalleryId == nil)
+        #expect(legacy.photoSelectionMode == .people)
+        #expect(legacy.sourceAlbumIdentifier == nil)
+
+        // 2. End-to-end SyncEngine run in .updateExisting + .album mode
+        final class CapturingPhotoLibrary: PhotoLibraryProviding, @unchecked Sendable {
+            var lastOptions: PhotosQueryOptions?
+            let photos: [PhotoMetadata]
+            init(photos: [PhotoMetadata]) { self.photos = photos }
+            func fetchAllPersonNames() async throws -> [String] { [] }
+            func queryPhotos(options: PhotosQueryOptions) async throws -> [PhotoMetadata] {
+                lastOptions = options
+                return photos
+            }
+        }
+        final class StubExporter: PhotoExporting, @unchecked Sendable {
+            func exportPhoto(_ photo: PhotoMetadata, toDirectory directory: URL) async throws -> URL {
+                let url = directory.appendingPathComponent("\(photo.uuid).jpg")
+                let colorSpace = CGColorSpaceCreateDeviceRGB()
+                let ctx = CGContext(
+                    data: nil,
+                    width: 400,
+                    height: 600,
+                    bitsPerComponent: 8,
+                    bytesPerRow: 0,
+                    space: colorSpace,
+                    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+                )!
+                let img = ctx.makeImage()!
+                try ImageProcessor.saveJPEG(img, to: url)
+                return url
+            }
+        }
+
+        let photo = PhotoMetadata(uuid: "ALBUM-P1", date: Date(timeIntervalSince1970: 1_700_000_000), width: 400, height: 600, curationScore: 0.9)
+        let library = CapturingPhotoLibrary(photos: [photo])
+        let exporter = StubExporter()
+        let store = InMemoryCredentialStore()
+        try store.setCredentials(MeuralCredentials(email: "u@example.com", password: "pw"), for: cfg.storageKey)
+        let stateStore = FileSyncStateStore(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("state-\(UUID().uuidString).json"))
+
+        var createdGalleryCalls = 0
+        var deletedGalleryCalls = 0
+        var attachedItems: [(Int, Int)] = []
+        var detachedItems: [(Int, Int)] = []
+
+        let transport = MockTransport { request in
+            let url = request.url?.absoluteString ?? ""
+            let method = request.httpMethod ?? "GET"
+            if url.contains("cognito-idp") {
+                return (Data(#"{"AuthenticationResult":{"AccessToken":"tok"}}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/devices") {
+                return (Data(#"{"data":[{"id":10,"orientation":"vertical"}]}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/galleries") {
+                return (Data(#"{"data":[{"id":77,"name":"Existing Shared Album","itemIds":[501,502]},{"id":88,"name":"Other Album","itemIds":[601]}]}"#.utf8), 200)
+            }
+            if method == "POST" && url.hasSuffix("/galleries") {
+                createdGalleryCalls += 1
+                return (Data(#"{"data":{"id":99,"name":"Unexpected"}}"#.utf8), 200)
+            }
+            if method == "POST" && url.hasSuffix("/items") {
+                return (Data(#"{"data":{"id":701}}"#.utf8), 200)
+            }
+            if method == "POST" && url.contains("/galleries/77/items/701") {
+                attachedItems.append((77, 701))
+                return (Data(#"{}"#.utf8), 200)
+            }
+            if method == "DELETE" && url.contains("/galleries/77/items/") {
+                if let idStr = url.components(separatedBy: "/items/").last, let id = Int(idStr) {
+                    detachedItems.append((77, id))
+                }
+                return (Data(#"{}"#.utf8), 200)
+            }
+            if method == "DELETE" && url.contains("/galleries/") {
+                deletedGalleryCalls += 1
+                return (Data(#"{}"#.utf8), 200)
+            }
+            if method == "GET" && url.contains("/user/items") {
+                return (Data(#"{"data":[{"id":701}]}"#.utf8), 200)
+            }
+            return (Data(#"{"data":[]}"#.utf8), 200)
+        }
+
+        let engine = SyncEngine()
+        try await engine.runSync(
+            config: AppConfig(instances: [cfg]),
+            credentialStore: store,
+            photoLibrary: library,
+            exporter: exporter,
+            stateStore: stateStore,
+            clientFactory: { name, credStore, log in
+                MeuralClient(instanceName: name, credentialStore: credStore, transport: transport, sleepHandler: { _ in }, logHandler: log)
+            }
+        )
+
+        #expect(library.lastOptions?.albumIdentifier == "ALBUM-UUID/L0/040")
+        #expect(library.lastOptions?.albumName == "Favorites 2026")
+        #expect(library.lastOptions?.includePeople.isEmpty == true)
+        #expect(createdGalleryCalls == 0)
+        #expect(deletedGalleryCalls == 0)
+        #expect(attachedItems.map { "\($0.0):\($0.1)" } == ["77:701"])
+        #expect(Set(detachedItems.map(\.1)) == Set([501, 502]))
+        #expect(stateStore.trackedGalleryIDs(for: cfg.storageKey).isEmpty)
+
+        // 3. Guard errors when required album or target gallery is missing
+        var missingAlbumCfg = cfg
+        missingAlbumCfg.sourceAlbumIdentifier = nil
+        missingAlbumCfg.sourceAlbumName = nil
+        await #expect(throws: SyncError.self) {
+            try await engine.runSync(
+                config: AppConfig(instances: [missingAlbumCfg]),
+                credentialStore: store,
+                photoLibrary: library,
+                exporter: exporter,
+                stateStore: stateStore,
+                clientFactory: { name, credStore, log in
+                    MeuralClient(instanceName: name, credentialStore: credStore, transport: transport, sleepHandler: { _ in }, logHandler: log)
+                }
+            )
+        }
+
+        var missingTargetGalleryCfg = cfg
+        missingTargetGalleryCfg.targetGalleryId = nil
+        await #expect(throws: SyncError.self) {
+            try await engine.runSync(
+                config: AppConfig(instances: [missingTargetGalleryCfg]),
+                credentialStore: store,
+                photoLibrary: library,
+                exporter: exporter,
+                stateStore: stateStore,
+                clientFactory: { name, credStore, log in
+                    MeuralClient(instanceName: name, credentialStore: credStore, transport: transport, sleepHandler: { _ in }, logHandler: log)
+                }
+            )
+        }
+    }
 }
