@@ -102,7 +102,26 @@ final class AppState {
 
     var nextScheduledSyncDate: Date? {
         guard let schedule = config.schedule, schedule.enabled else { return nil }
-        return schedule.nextRunDate(after: Date(), lastRun: lastScheduledRunDate)
+        let now = Date()
+        let lastRun = scheduleLastRun(for: schedule)
+        guard let next = schedule.nextRunDate(after: now, lastRun: lastRun) else { return nil }
+
+        // Reflect the pending hourly retry instead of showing "now" while backing off.
+        if schedule.frequency == .oncePerDay, let lastFailure = lastScheduledFailureDate {
+            let retryAt = lastFailure.addingTimeInterval(ScheduleConfig.oncePerDayRetryInterval)
+            if next < retryAt {
+                return schedule.isDue(at: retryAt, lastRun: lastRun)
+                    ? retryAt
+                    : schedule.nextRunDate(after: retryAt, lastRun: lastRun)
+            }
+        }
+        return next
+    }
+
+    /// Once-a-day schedules count any successful sync (manual or scheduled) toward the day's window;
+    /// other frequencies track the last scheduled run slot.
+    private func scheduleLastRun(for schedule: ScheduleConfig) -> Date? {
+        schedule.frequency == .oncePerDay ? lastSyncDate : lastScheduledRunDate
     }
 
     static var configFileURL: URL {
@@ -564,6 +583,13 @@ final class AppState {
     }
 
     private func handleCancellation(isScheduled: Bool) {
+        if isScheduled, config.schedule?.frequency == .oncePerDay {
+            // Once-a-day schedules must still sync today, so treat a cancel as a failed attempt and retry in an hour.
+            consecutiveScheduledFailures += 1
+            lastScheduledFailureDate = Date()
+            appendLog("Sync cancelled. Scheduled sync will retry in 1 hour.")
+            return
+        }
         if isScheduled {
             // Do not immediately re-trigger the cancelled scheduled slot on the next 30s timer tick.
             lastScheduledRunDate = Date()
@@ -575,6 +601,13 @@ final class AppState {
 
     private func handleScheduledFailure(_ error: Error) {
         let now = Date()
+        if config.schedule?.frequency == .oncePerDay {
+            // Mirror the launchd job this replaces: keep retrying hourly until a sync succeeds in today's window.
+            consecutiveScheduledFailures += 1
+            lastScheduledFailureDate = now
+            appendLog("Scheduled sync will retry in 1 hour (attempt \(consecutiveScheduledFailures) failed).")
+            return
+        }
         if Self.isNonRetryableScheduledError(error) {
             // Do not auto-retry broken credentials, permissions, or empty-match configs until the next scheduled slot.
             lastScheduledRunDate = now
@@ -644,15 +677,18 @@ final class AppState {
         guard isPhotoAccessGranted else { return }
 
         let now = Date()
-        // Exponential backoff between transient scheduled retries: 5 min, 15 min (capped at 3 attempts per slot).
+        // Once-a-day schedules retry hourly without a cap. Other frequencies use exponential
+        // backoff between transient retries: 5 min, 15 min (capped at 3 attempts per slot).
         if let lastFailure = lastScheduledFailureDate, consecutiveScheduledFailures > 0 {
-            let backoffSeconds = 300.0 * pow(3.0, Double(consecutiveScheduledFailures - 1))
+            let backoffSeconds = schedule.frequency == .oncePerDay
+                ? ScheduleConfig.oncePerDayRetryInterval
+                : 300.0 * pow(3.0, Double(consecutiveScheduledFailures - 1))
             if now.timeIntervalSince(lastFailure) < backoffSeconds {
                 return
             }
         }
 
-        guard schedule.isDue(at: now, lastRun: lastScheduledRunDate) else { return }
+        guard schedule.isDue(at: now, lastRun: scheduleLastRun(for: schedule)) else { return }
         appendLog("Starting scheduled sync (\(schedule.frequency.displayName)).")
         startSync(isScheduled: true)
     }

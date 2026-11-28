@@ -431,6 +431,30 @@ private struct InstanceEditorView: View {
 private struct ScheduleAndPermissionsTab: View {
     @Bindable var appState: AppState
 
+    /// Binds a time-only DatePicker to an hour/minute pair on the schedule config.
+    private func scheduleTimeBinding(
+        hour hourPath: WritableKeyPath<ScheduleConfig, Int>,
+        minute minutePath: WritableKeyPath<ScheduleConfig, Int>
+    ) -> Binding<Date> {
+        Binding(
+            get: {
+                let schedule = appState.config.schedule ?? ScheduleConfig()
+                var comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+                comps.hour = schedule[keyPath: hourPath]
+                comps.minute = schedule[keyPath: minutePath]
+                return Calendar.current.date(from: comps) ?? Date()
+            },
+            set: { date in
+                var s = appState.config.schedule ?? ScheduleConfig()
+                s[keyPath: hourPath] = Calendar.current.component(.hour, from: date)
+                s[keyPath: minutePath] = Calendar.current.component(.minute, from: date)
+                appState.config.schedule = s
+                appState.seedScheduleAfterEdit()
+                appState.saveConfig()
+            }
+        )
+    }
+
     var body: some View {
         Form {
             Section("Permissions") {
@@ -530,6 +554,32 @@ private struct ScheduleAndPermissionsTab: View {
                             ),
                             in: 1...24
                         )
+                    } else if schedule.frequency == .oncePerDay {
+                        DatePicker(
+                            "Allowed From",
+                            selection: scheduleTimeBinding(
+                                hour: \.windowStartHour,
+                                minute: \.windowStartMinute
+                            ),
+                            displayedComponents: .hourAndMinute
+                        )
+
+                        DatePicker(
+                            "Allowed Until",
+                            selection: scheduleTimeBinding(
+                                hour: \.windowEndHour,
+                                minute: \.windowEndMinute
+                            ),
+                            displayedComponents: .hourAndMinute
+                        )
+
+                        Text(
+                            schedule.isAllDayWindow
+                                ? "Syncs at the first chance each day (launch, wake, or midnight) and retries every hour until one succeeds. Set different times to limit when syncing is allowed."
+                                : "Syncs at the first chance inside this window each day and retries every hour until one succeeds. A manual sync inside the window also counts."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     } else {
                         DatePicker(
                             "Sync Time",
